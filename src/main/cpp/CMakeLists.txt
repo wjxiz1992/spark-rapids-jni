@@ -162,6 +162,7 @@ add_library(
   src/ParseURIJni.cpp
   src/RowConversionJni.cpp
   src/SparkResourceAdaptorJni.cpp
+  src/TableOperationJni.cpp
   src/ZOrderJni.cpp
   src/bloom_filter.cu
   src/cast_decimal_to_string.cu
@@ -175,6 +176,7 @@ add_library(
   src/histogram.cu
   src/map_utils.cu
   src/murmur_hash.cu
+  src/padding_partition.cu
   src/parse_uri.cu
   src/row_conversion.cu
   src/timezones.cu
