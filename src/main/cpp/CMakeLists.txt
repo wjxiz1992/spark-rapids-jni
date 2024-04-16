@@ -277,6 +277,35 @@ if(USE_GDS)
 endif()
 
 # ##################################################################################################
+# * profiler JNI -----------------------------------------------------------------------------------
+
+add_library(profilerjni SHARED
+  src/ProfilerJni.cpp
+)
+
+set_target_properties(
+  profilerjni
+  PROPERTIES BUILD_RPATH "\$ORIGIN"
+             INSTALL_RPATH "\$ORIGIN"
+             # set target compile options
+             CXX_STANDARD 17
+             CXX_STANDARD_REQUIRED ON
+)
+
+target_include_directories(
+  profilerjni
+  PRIVATE "${JNI_INCLUDE_DIRS}"
+          "${CUDAToolkit_INCLUDE_DIRS}"
+)
+
+find_library(CUPTI_LIBRARY_PATH cupti_static PATHS
+  "/usr/local/cuda/lib64"
+  "/usr/local/cuda/extras/CUPTI/lib64"
+)
+
+target_link_libraries(profilerjni PRIVATE ${CUPTI_LIBRARY_PATH})
+
+# ##################################################################################################
 # * add tests -------------------------------------------------------------------------------------
 
 if(SPARK_RAPIDS_JNI_BUILD_TESTS)
