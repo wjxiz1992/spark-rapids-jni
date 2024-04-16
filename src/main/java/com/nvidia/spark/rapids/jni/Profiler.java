@@ -21,34 +21,35 @@ import org.slf4j.LoggerFactory;
 
 public class Profiler {
   private static final Logger LOG = LoggerFactory.getLogger(Profiler.class);
-  private static long state_handle = 0;
+  private static boolean isInitialized = false;
 
   static {
     try {
-      NativeDepsLoader.loadNativeDeps(new String[]{"cupti", "profilerjni"});
+      NativeDepsLoader.loadNativeDeps(new String[]{"profilerjni"});
     } catch (Exception e) {
       LOG.error("Unable to load profiling libraries", e);
     }
   }
 
   public static void init() {
-    if (state_handle == 0) {
-      state_handle = nativeInit();
+    if (!isInitialized) {
+      nativeInit();
+      isInitialized = true;
     } else {
       throw new IllegalStateException("Already initialized");
     }
   }
 
   public static void shutdown() {
-    if (state_handle != 0) {
-      nativeShutdown(state_handle);
-      state_handle = 0;
+    if (isInitialized) {
+      nativeShutdown();
+      isInitialized = false;
     } else {
       throw new IllegalStateException("Not initialized");
     }
   }
 
-  private static native long nativeInit();
+  private static native void nativeInit();
 
-  private static native void nativeShutdown(long handle);
+  private static native void nativeShutdown();
 }
