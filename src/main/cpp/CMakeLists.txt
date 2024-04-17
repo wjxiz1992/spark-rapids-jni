@@ -303,7 +303,9 @@ find_library(CUPTI_LIBRARY_PATH cupti_static PATHS
   "/usr/local/cuda/extras/CUPTI/lib64"
 )
 
-target_link_libraries(profilerjni PRIVATE ${CUPTI_LIBRARY_PATH})
+target_link_libraries(profilerjni
+  PRIVATE ${CUPTI_LIBRARY_PATH} nvtx3-cpp
+)
 
 # ##################################################################################################
 # * add tests -------------------------------------------------------------------------------------
