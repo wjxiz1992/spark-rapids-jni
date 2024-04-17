@@ -21,6 +21,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+// CUPTI headers do not declare their NVTX initialization, so we need to declare it per
+// https://docs.nvidia.com/cupti/main/main.html#nvidia-tools-extension-callbacks
+extern "C" CUptiResult CUPTIAPI cuptiNvtxInitialize2(void* pfnGetExportTable);
+
 // HACK - FIXME
 #define JNI_EXCEPTION_OCCURRED_CHECK(env, ret_val)                                                 \
   {                                                                                                \
@@ -327,6 +331,13 @@ JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeShutdown(
     }
   }
   CATCH_STD(env, );
+}
+
+int InitializeInjectionNvtx2_fnptr(void* p)
+{
+  std::cerr << "INITIALIZING NVTX" << std::endl;
+  CUptiResult rc = cuptiNvtxInitialize2(p);
+  return (rc == CUPTI_SUCCESS) ? 1 : 0;
 }
 
 }
