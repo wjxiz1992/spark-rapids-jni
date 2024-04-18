@@ -21,10 +21,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-// CUPTI headers do not declare their NVTX initialization, so we need to declare it per
-// https://docs.nvidia.com/cupti/main/main.html#nvidia-tools-extension-callbacks
-extern "C" CUptiResult CUPTIAPI cuptiNvtxInitialize2(void* pfnGetExportTable);
-
 // HACK - FIXME
 #define JNI_EXCEPTION_OCCURRED_CHECK(env, ret_val)                                                 \
   {                                                                                                \
@@ -219,6 +215,47 @@ std::string activity_kind_to_string(CUpti_ActivityKind kind)
   }
 }
 
+std::string marker_flags_to_string(CUpti_ActivityFlag flags)
+{
+  std::string s("");
+  if (flags & CUPTI_ACTIVITY_FLAG_MARKER_INSTANTANEOUS) {
+    s += "INSTANTANEOUS ";
+  }
+  if (flags & CUPTI_ACTIVITY_FLAG_MARKER_START) {
+    s += "START ";
+  }
+  if (flags & CUPTI_ACTIVITY_FLAG_MARKER_END) {
+    s += "END ";
+  }
+  if (flags & CUPTI_ACTIVITY_FLAG_MARKER_SYNC_ACQUIRE) {
+    s += "SYNCACQUIRE ";
+  }
+  if (flags & CUPTI_ACTIVITY_FLAG_MARKER_SYNC_ACQUIRE_SUCCESS) {
+    s += "SYNCACQUIRESUCCESS ";
+  }
+  if (flags & CUPTI_ACTIVITY_FLAG_MARKER_SYNC_ACQUIRE_FAILED) {
+    s += "SYNCACQUIREFAILED ";
+  }
+  if (flags & CUPTI_ACTIVITY_FLAG_MARKER_SYNC_RELEASE) {
+    s += "SYNCRELEASE ";
+  }
+  return s;
+}
+
+std::string activity_object_kind_to_string(CUpti_ActivityObjectKind kind)
+{
+  switch (kind) {
+    case CUPTI_ACTIVITY_OBJECT_PROCESS: return "PROCESS";
+    case CUPTI_ACTIVITY_OBJECT_THREAD: return "THREAD";
+    case CUPTI_ACTIVITY_OBJECT_DEVICE: return "DEVICE";
+    case CUPTI_ACTIVITY_OBJECT_CONTEXT: return "CONTEXT";
+    case CUPTI_ACTIVITY_OBJECT_STREAM: return "STREAM";
+    case CUPTI_ACTIVITY_OBJECT_UNKNOWN:
+    default:
+      return "UNKNOWN";
+  }
+}
+
 void CUPTIAPI buffer_requested_callback(uint8_t** buffer_ptr_ptr, size_t* size_ptr,
     size_t* max_num_records_ptr)
 {
@@ -269,6 +306,35 @@ void CUPTIAPI buffer_completed_callback(CUcontext, uint32_t,
           std::cerr << "  NAME: " << name << " THREAD: " << api_record->threadId << std::endl;
           break;
         }
+        case CUPTI_ACTIVITY_KIND_MARKER:
+        {
+          auto marker_record = reinterpret_cast<CUpti_ActivityMarker2 const*>(record_ptr);
+          std::cerr << "  FLAGS: " << marker_flags_to_string(marker_record->flags)
+            << " ID: " << marker_record->id
+            << " OBJECTKIND: " << activity_object_kind_to_string(marker_record->objectKind)
+            << " NAME: " << std::string(marker_record->name ? marker_record->name : "NULL")
+            << " DOMAIN: " << std::string(marker_record->domain ? marker_record->domain : "NULL")
+            << std::endl;
+          break;
+        }
+        case CUPTI_ACTIVITY_KIND_MARKER_DATA:
+        {
+          auto marker_record = reinterpret_cast<CUpti_ActivityMarkerData const*>(record_ptr);
+          std::cerr << "  FLAGS: " << marker_flags_to_string(marker_record->flags)
+            << " ID: " << marker_record->id
+            << " COLOR: " << marker_record->color
+            << " COLOR FLAG: " << marker_record->flags
+            << " CATEGORY: " << marker_record->category
+            << " DATA KIND: " << marker_record->payloadKind
+            << " DATA: " << marker_record->payload.metricValueUint64 << "/" << marker_record->payload.metricValueDouble
+            << std::endl;
+          break;
+        }
+        case CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL:
+        {
+          auto kernel_record = reinterpret_cast<CUpti_ActivityKernel8 const*>(record_ptr);
+          std::cerr << "  NAME: " << kernel_record->name << std::endl;
+        }
         default:
           break;
       }
@@ -282,9 +348,16 @@ void CUPTIAPI buffer_completed_callback(CUcontext, uint32_t,
 
 extern "C" {
 
-JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeInit(JNIEnv* env, jclass)
+JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeInit(JNIEnv* env, jclass,
+    jstring j_lib_path)
 {
   try {
+    auto lib_path = env->GetStringUTFChars(j_lib_path, 0);
+    if (lib_path == NULL) {
+      throw new std::runtime_error("Error getting library path");
+    }
+    setenv("NVTX_INJECTION64_PATH", lib_path, 1);
+    env->ReleaseStringUTFChars(j_lib_path, lib_path);
     State = new subscriber_state(env);
     auto rc = cuptiSubscribe(&State->subscriber_handle, callback_handler, nullptr);
     check_cupti(rc, "Error initializing CUPTI");
@@ -303,7 +376,7 @@ JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeInit(JNIE
     rc = cuptiActivityRegisterCallbacks(buffer_requested_callback, buffer_completed_callback);
     check_cupti(rc, "Error registering activity buffer callbacks");
 
-    check_cupti(cuptiEnableDomain(1, State->subscriber_handle, CUPTI_CB_DOMAIN_NVTX), "Error enabling NVTX domain");
+    //check_cupti(cuptiEnableDomain(1, State->subscriber_handle, CUPTI_CB_DOMAIN_NVTX), "Error enabling NVTX domain");
     check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_DEVICE), "Error enabling device activity");
     check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONTEXT), "Error enabling context activity");
     check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_DRIVER), "Error enabling driver activity");
@@ -333,11 +406,22 @@ JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeShutdown(
   CATCH_STD(env, );
 }
 
-int InitializeInjectionNvtx2_fnptr(void* p)
-{
-  std::cerr << "INITIALIZING NVTX" << std::endl;
-  CUptiResult rc = cuptiNvtxInitialize2(p);
-  return (rc == CUPTI_SUCCESS) ? 1 : 0;
 }
 
+/* Extern the CUPTI NVTX initialization APIs. The APIs are thread-safe */
+extern "C" CUptiResult CUPTIAPI cuptiNvtxInitialize(void* pfnGetExportTable);
+extern "C" CUptiResult CUPTIAPI cuptiNvtxInitialize2(void* pfnGetExportTable);
+
+extern "C" int InitializeInjectionNvtx(void* p)
+{
+  std::cerr << "INIT NVTX V1 CALLED" << std::endl;
+  CUptiResult res = cuptiNvtxInitialize(p);
+  return (res == CUPTI_SUCCESS) ? 1 : 0;
+}
+
+extern "C" int InitializeInjectionNvtx2(void* p)
+{
+  std::cerr << "INIT NVTX V2 CALLED" << std::endl;
+  CUptiResult res = cuptiNvtxInitialize2(p);
+  return (res == CUPTI_SUCCESS) ? 1 : 0;
 }
