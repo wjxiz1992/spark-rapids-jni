@@ -19,21 +19,22 @@ import ai.rapids.cudf.NativeDepsLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
+import java.io.IOException;
+
 public class Profiler {
   private static final Logger LOG = LoggerFactory.getLogger(Profiler.class);
   private static boolean isInitialized = false;
 
-  static {
-    try {
-      NativeDepsLoader.loadNativeDeps(new String[]{"profilerjni"});
-    } catch (Exception e) {
-      LOG.error("Unable to load profiling libraries", e);
-    }
-  }
-
   public static void init() {
     if (!isInitialized) {
-      nativeInit();
+      File libPath;
+      try {
+        libPath = NativeDepsLoader.loadNativeDep("profilerjni", true);
+      } catch (IOException e) {
+        throw new RuntimeException("Error loading profiler library", e);
+      }
+      nativeInit(libPath.getAbsolutePath());
       isInitialized = true;
     } else {
       throw new IllegalStateException("Already initialized");
@@ -49,7 +50,7 @@ public class Profiler {
     }
   }
 
-  private static native void nativeInit();
+  private static native void nativeInit(String libPath);
 
   private static native void nativeShutdown();
 }
