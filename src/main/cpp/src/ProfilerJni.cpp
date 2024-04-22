@@ -17,7 +17,11 @@
 #include <cupti.h>
 #include <jni.h>
 
+#include <condition_variable>
 #include <iostream>
+#include <mutex>
+#include <queue>
+#include <stack>
 #include <stdlib.h>
 #include <string.h>
 
@@ -53,15 +57,111 @@ namespace {
 
 constexpr size_t ALIGN_BYTES = 8;
 constexpr size_t BUFF_SIZE = 8 * 1024 * 1024;
+constexpr char const* DATA_WRITER_CLASS "com/nvidia/spark/rapids/jni/Profiler$DataWriter";
 
-struct subscriber_state {
-  subscriber_state(JNIEnv* env) : jni(env), callback_errored(false) {}
-  JNIEnv* jni;
-  CUpti_SubscriberHandle subscriber_handle;
-  bool callback_errored;
+struct profile_buffer {
+  profile_buffer() : _size(BUFF_SIZE), _valid_size(0) {
+    auto err = posix_memalign(reinterpret_cast<void**>(_data), ALIGN_BYTES, size);
+    if (err != 0) {
+      std::cerr << "PROFILER: FAILED TO ALLOCATE CUPTI BUFFER: " << strerror(err) << std::endl;
+      _data = nullptr;
+      _size = 0;
+    }
+  }
+
+  ~profile_buffer() {
+    free(_data);
+    _data = nullptr;
+    _size = 0;
+  }
+
+  uint8_t* data() { return _data; }
+  size_t size() { return _size; }
+  size_t valid_size() { return _valid_size; }
+  void set_valid_size(size_t size) { _valid_size = size; }
+
+private:
+  uint8_t* _data;
+  size_t _size;
+  size_t _valid_size;
 };
 
+struct completed_buffer_queue {
+  std::unique_ptr<profile_buffer> get() {
+    std::unique_lock lock(_lock);
+    _cv.wait(lock, []{ return _shutdown || _buffers.size() > 0; });
+    if (_buffers.size() > 0) {
+      return _buffers.pop();
+    }
+    return std::make_unique<profile_buffer>();
+  }
+
+  void put(std::unique_ptr<profile_buffer>&& buffer) {
+    std::unique_lock lock(_lock);
+    _buffers.push(buffer);
+    lock.unlock();
+    _cv.notify_one();
+  }
+
+  void shutdown() {
+    std::unique_lock lock(_lock);
+    _shutdown = true;
+    lock.unlock();
+    _cv.notify_one();
+  }
+
+private:
+  std::mutex _lock;
+  std::condition_variable _cv;
+  std::queue<std::unique_ptr<profile_buffer>> _buffers;
+  bool _shutdown = false;
+}
+
+struct free_buffer_tracker {
+  std::unique_ptr<profile_buffer> get() {
+    {
+      std::lock_guard lock(_lock);
+      if (_buffers.size() > 0) {
+        return _buffers.pop();
+      }
+    }
+    return std::make_unique<profile_buffer>();
+  }
+
+  void put(std::unique_ptr<profile_buffer>&& buffer) {
+    buffer.set_valid_size(0);
+    std::lock_guard lock(_lock);
+    if (_buffers.size() < NUM_CACHED_BUFFERS) {
+      _buffers.push(buffer);
+    } else {
+      buffer.reset(nullptr);
+    }
+  }
+
+private:
+  constexpr size_t NUM_CACHED_BUFFERS = 2;
+  std::mutex _lock;
+  std::stack<std::unique_ptr<profile_buffer>> _buffers;
+};
+
+struct subscriber_state {
+  JNIEnv* jni;
+  CUpti_SubscriberHandle subscriber_handle;
+  bool has_cupti_callback_errored;
+  jobject j_writer;
+  thread writer_thread;
+  free_buffer_tracker free_buffers;
+  completed_buffer_queue completed_buffers;
+
+  subscriber_state(JNIEnv* env)
+    : jni(env), has_cupti_callback_errored(false) {}
+};
+
+
 subscriber_state* State = nullptr;
+jclass Data_writer_jclass;
+jmethodID Data_writer_write_method;
+
 
 char const* get_cupti_error(CUptiResult rc)
 {
@@ -133,7 +233,7 @@ void CUPTIAPI callback_handler(void*, CUpti_CallbackDomain domain,
 {
   auto rc = cuptiGetLastError();
   if (rc != CUPTI_SUCCESS && !State->callback_errored) {
-    //State->callback_errored = true;
+    //State->has_cupti_callback_errored = true;
     std::cerr << "ERROR HANDLING CALLBACK: " << get_cupti_error(rc) << std::endl;
     return;
   }
@@ -344,21 +444,94 @@ void CUPTIAPI buffer_completed_callback(CUcontext, uint32_t,
   free(buffer);
 }
 
+void cache_writer_callback_method(JNIEnv* env)
+{
+  auto cls = env->FindClass(DATA_WRITER_CLASS);
+  if (!cls) {
+    throw runtime_error(std::string("Failed to locate class: ") + DATA_WRITER_CLASS);
+  }
+  Data_writer_write_method = env->GetMethodID(env, "write", "(Ljava.nio.ByteBuffer;)V")
+  if (!Data_writer_write_method) {
+    throw runtime_error(std::string("Failed to locate data writer write method");
+  }
+  // Convert local reference to global so it cannot be garbage collected.
+  Data_writer_jclass = static_cast<jclass>(env->NewGlobalRef(cls));
+  if (!Data_writer_jclass) {
+    throw runtime_error(std::string("Failed to create a global reference to ") + DATA_WRITER_CLASS);
+  }
+}
+
+void free_writer_callback_cache(JNIEnv* env)
+{
+  if (Data_writer_jclass) {
+    env->DeleteGlobalRef(Data_writer_jclass);
+    Data_writer_jclass = nullptr;
+  }
+}
+
+}
+
+void setup_nvtx_env(JNIEnv* env, jstring lib_path)
+{
+  auto lib_path = env->GetStringUTFChars(j_lib_path, 0);
+  if (lib_path == NULL) {
+    throw new std::runtime_error("Error getting library path");
+  }
+  setenv("NVTX_INJECTION64_PATH", lib_path, 1);
+  env->ReleaseStringUTFChars(j_lib_path, lib_path);
+}
+
+JavaVM* get_jvm(JNIEnv* env)
+{
+  JavaVM* vm;
+  if (env->GetJavaVM(&vm) != 0) {
+    throw runtime_error("Unable to get JavaVM");
+  }
+  return vm;
+}
+
+JNIEnv* attach_to_jvm(JavaVM* vm)
+{
+  JavaVMAttachArgs args;
+  args.version = JNI_VERSION_1_6;
+  args.name = "profiler writer";
+  args.group = nullptr;
+  JNIEnv* env;
+  if (vm->AttachCurrentThread(reinterpret_cast<void**>(&env), &args) != JNI_OK) {
+    char const* msg = "PROFILER: UNABLE TO ATTACH TO JVM";
+    std::cerr << msg << std::endl;
+    throw runtime_error(msg);
+  }
+  return env;
+}
+
+void writer_thread(JavaVM* vm)
+{
+  JNIEnv* env = attach_to_jvm(vm);
+  auto buffer = State->completed_buffer_queue.get();
+  while (buffer) {
+    process_buffer(buffer);
+    State->free_buffer_tracker.put(std::move(buffer));
+    buffer = State->completed_buffer_queue.get();
+  }
+  vm->DetachCurrentThread();
+}
+
 }
 
 extern "C" {
 
 JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeInit(JNIEnv* env, jclass,
-    jstring j_lib_path)
+    jstring j_lib_path, jobject j_writer)
 {
   try {
-    auto lib_path = env->GetStringUTFChars(j_lib_path, 0);
-    if (lib_path == NULL) {
-      throw new std::runtime_error("Error getting library path");
-    }
-    setenv("NVTX_INJECTION64_PATH", lib_path, 1);
-    env->ReleaseStringUTFChars(j_lib_path, lib_path);
+    setup_writer_callback(env);
+    setup_nvtx_env(env, j_lib_path);
     State = new subscriber_state(env);
+    // grab a global reference to the writer instance so it isn't garbage collected while
+    // we're trying to use it
+    State->j_writer = static_cast<jobject>(env->NewGlobalRef(j_writer));
+    State->writer_thread = thread(writer_thread, get_jvm(env), j_writer);
     auto rc = cuptiSubscribe(&State->subscriber_handle, callback_handler, nullptr);
     check_cupti(rc, "Error initializing CUPTI");
     rc = cuptiEnableCallback(1, State->subscriber_handle, CUPTI_CB_DOMAIN_RUNTIME_API,
@@ -397,8 +570,12 @@ JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeShutdown(
     if (State != nullptr) {
       auto unsub_rc = cuptiUnsubscribe(State->subscriber_handle);
       auto flush_rc = cuptiActivityFlushAll(1);
+      State->completed_buffers.shutdown();
+      State->writer_thread.join();
+      env->DeleteGlobalRef(State->j_writer);
       delete State;
       State = nullptr;
+      free_writer_callback_cache();
       check_cupti(unsub_rc, "Error unsubscribing from CUPTI");
       check_cupti(flush_rc, "Error flushing CUPTI records");
     }

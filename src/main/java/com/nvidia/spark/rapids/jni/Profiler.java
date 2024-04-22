@@ -21,36 +21,45 @@ import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 
 public class Profiler {
   private static final Logger LOG = LoggerFactory.getLogger(Profiler.class);
-  private static boolean isInitialized = false;
+  private static DataWriter writer = null;
 
-  public static void init() {
-    if (!isInitialized) {
+  public static void init(DataWriter w) {
+    if (writer == null) {
       File libPath;
       try {
         libPath = NativeDepsLoader.loadNativeDep("profilerjni", true);
       } catch (IOException e) {
         throw new RuntimeException("Error loading profiler library", e);
       }
-      nativeInit(libPath.getAbsolutePath());
-      isInitialized = true;
+      nativeInit(libPath.getAbsolutePath(), w);
+      writer = w;
     } else {
       throw new IllegalStateException("Already initialized");
     }
   }
 
   public static void shutdown() {
-    if (isInitialized) {
+    if (writer != null) {
       nativeShutdown();
-      isInitialized = false;
-    } else {
-      throw new IllegalStateException("Not initialized");
+      try {
+        writer.close();
+      } catch (Exception e) {
+        throw new RuntimeException("Error closing writer", e);
+      } finally {
+        writer = null;
+      }
     }
   }
 
-  private static native void nativeInit(String libPath);
+  private static native void nativeInit(String libPath, DataWriter writer);
 
   private static native void nativeShutdown();
+
+  public interface DataWriter extends AutoCloseable {
+    void write(ByteBuffer data);
+  }
 }
