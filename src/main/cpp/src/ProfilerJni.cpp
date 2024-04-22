@@ -462,7 +462,7 @@ void cache_writer_callback_method(JNIEnv* env)
   if (!cls) {
     throw std::runtime_error(std::string("Failed to locate class: ") + DATA_WRITER_CLASS);
   }
-  Data_writer_write_method = env->GetMethodID(cls, "write", "(Ljava.nio.ByteBuffer;)V");
+  Data_writer_write_method = env->GetMethodID(cls, "write", "(Ljava/nio/ByteBuffer;)V");
   if (!Data_writer_write_method) {
     throw std::runtime_error("Failed to locate data writer write method");
   }
