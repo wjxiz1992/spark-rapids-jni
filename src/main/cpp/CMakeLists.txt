@@ -298,7 +298,7 @@ target_include_directories(
           "${CUDAToolkit_INCLUDE_DIRS}"
 )
 
-find_library(CUPTI_LIBRARY_PATH cupti_static PATHS
+find_library(CUPTI_LIBRARY_PATH cupti PATHS
   "/usr/local/cuda/lib64"
   "/usr/local/cuda/extras/CUPTI/lib64"
 )
