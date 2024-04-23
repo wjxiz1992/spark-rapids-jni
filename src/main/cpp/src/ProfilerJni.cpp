@@ -136,6 +136,7 @@ struct free_buffer_tracker {
     {
       std::lock_guard lock(_lock);
       if (_buffers.size() > 0) {
+        std::cerr << "PROFILER: ALLOCATING A BUFFER" << std::endl;
         auto result = std::move(_buffers.top());
         _buffers.pop();
         return result;
@@ -150,6 +151,7 @@ struct free_buffer_tracker {
     if (_buffers.size() < NUM_CACHED_BUFFERS) {
       _buffers.push(std::move(buffer));
     } else {
+      std::cerr << "PROFILER: FREEING A BUFFER" << std::endl;
       buffer.reset(nullptr);
     }
   }
@@ -446,13 +448,19 @@ void print_buffer(uint8_t* buffer, size_t valid_size)
 void CUPTIAPI buffer_requested_callback(uint8_t** buffer_ptr_ptr, size_t* size_ptr,
     size_t* max_num_records_ptr)
 {
-  auto buffer = State->free_buffers.get();
-  buffer->release(buffer_ptr_ptr, size_ptr);
+  std::cerr << "BUFFER REQUEST CALLBACK" << std::endl;
+  {
+    *max_num_records_ptr = 0;
+    auto buffer = State->free_buffers.get();
+    buffer->release(buffer_ptr_ptr, size_ptr);
+  }
+  std::cerr << "BUFFER REQUEST CALLBACK COMPLETED" << std::endl;
 }
 
 void CUPTIAPI buffer_completed_callback(CUcontext, uint32_t,
     uint8_t* buffer, size_t buffer_size, size_t valid_size)
 {
+  std::cerr << "BUFFER COMPLETED CALLBACK" << std::endl;
   State->completed_buffers.put(std::make_unique<profile_buffer>(buffer, valid_size));
 }
 
@@ -522,14 +530,18 @@ void process_buffer(profile_buffer& buffer)
 
 void writer_thread(JavaVM* vm, jobject j_writer)
 {
-  JNIEnv* env = attach_to_jvm(vm);
+  std::cerr << "WRITER THREAD START" << std::endl;
+  //JNIEnv* env = attach_to_jvm(vm);
+  //std::cerr << "WRITER THREAD JVM ATTACHED" << std::endl;
   auto buffer = State->completed_buffers.get();
   while (buffer) {
     process_buffer(*buffer);
     State->free_buffers.put(std::move(buffer));
     buffer = State->completed_buffers.get();
   }
-  vm->DetachCurrentThread();
+  //std::cerr << "WRITER THREAD DETACHING" << std::endl;
+  //vm->DetachCurrentThread();
+  std::cerr << "WRITER THREAD COMPLETED" << std::endl;
 }
 
 }
@@ -546,7 +558,7 @@ JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeInit(JNIE
     // grab a global reference to the writer instance so it isn't garbage collected while
     // we're trying to use it
     State->j_writer = static_cast<jobject>(env->NewGlobalRef(j_writer));
-    State->writer_thread = std::thread(writer_thread, get_jvm(env), j_writer);
+    //State->writer_thread = std::thread(writer_thread, get_jvm(env), j_writer);
     auto rc = cuptiSubscribe(&State->subscriber_handle, callback_handler, nullptr);
     check_cupti(rc, "Error initializing CUPTI");
     rc = cuptiEnableCallback(1, State->subscriber_handle, CUPTI_CB_DOMAIN_RUNTIME_API,
