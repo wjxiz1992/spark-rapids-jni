@@ -31,6 +31,7 @@ public class Profiler {
     if (writer == null) {
       File libPath;
       try {
+        NativeDepsLoader.loadNativeDep("cupti", true);
         libPath = NativeDepsLoader.loadNativeDep("profilerjni", true);
       } catch (IOException e) {
         throw new RuntimeException("Error loading profiler library", e);
