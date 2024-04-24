@@ -62,18 +62,20 @@ constexpr char const* DATA_WRITER_CLASS = "com/nvidia/spark/rapids/jni/Profiler$
 
 struct profile_buffer {
   profile_buffer() : _size(BUFF_SIZE), _valid_size(0) {
-    auto err = posix_memalign(reinterpret_cast<void**>(_data), ALIGN_BYTES, _size);
+    auto err = posix_memalign(reinterpret_cast<void**>(&_data), ALIGN_BYTES, _size);
     if (err != 0) {
       std::cerr << "PROFILER: FAILED TO ALLOCATE CUPTI BUFFER: " << strerror(err) << std::endl;
       _data = nullptr;
       _size = 0;
     }
+    std::cerr << "PROFILER: ALLOCATED BUFFER at " << static_cast<void*>(_data) << " SIZE=" << _size << std::endl;
   }
 
   profile_buffer(uint8_t* data, size_t valid_size)
    : _data(data), _size(valid_size ? BUFF_SIZE : 0), _valid_size(_valid_size) {}
 
   void release(uint8_t** data_ptr_ptr, size_t* size_ptr) {
+    std::cerr << "PROFILER: RELEASING BUFFER at " << static_cast<void*>(_data) << " SIZE=" << _size << std::endl;
     *data_ptr_ptr = _data;
     *size_ptr = _size;
     _data = nullptr;
@@ -81,6 +83,7 @@ struct profile_buffer {
   }
 
   ~profile_buffer() {
+    std::cerr << "PROFILER: FREEING BUFFER at " << static_cast<void*>(_data) << " SIZE=" << _size << std::endl;
     free(_data);
     _data = nullptr;
     _size = 0;
@@ -107,7 +110,7 @@ struct completed_buffer_queue {
       _buffers.pop();
       return result;
     }
-    return std::make_unique<profile_buffer>();
+    return std::unique_ptr<profile_buffer>(nullptr);
   }
 
   void put(std::unique_ptr<profile_buffer>&& buffer) {
@@ -136,12 +139,12 @@ struct free_buffer_tracker {
     {
       std::lock_guard lock(_lock);
       if (_buffers.size() > 0) {
-        std::cerr << "PROFILER: ALLOCATING A BUFFER" << std::endl;
         auto result = std::move(_buffers.top());
         _buffers.pop();
         return result;
       }
     }
+    std::cerr << "PROFILER: ALLOCATING A BUFFER" << std::endl;
     return std::make_unique<profile_buffer>();
   }
 
@@ -237,7 +240,7 @@ void domain_runtime_callback(CUpti_CallbackId callback_id, CUpti_CallbackData co
       if (data_ptr->callbackSite == CUPTI_API_ENTER) {
         auto rc = cuptiActivityFlushAll(0);
         if (rc != CUPTI_SUCCESS) {
-          std::cerr << "Error flushing CUPTI activity on device reset: " << get_cupti_error(rc) << std::endl;
+          std::cerr << "PROFILER: Error flushing CUPTI activity on device reset: " << get_cupti_error(rc) << std::endl;
         }
       }
       break;
@@ -252,7 +255,7 @@ void CUPTIAPI callback_handler(void*, CUpti_CallbackDomain domain,
   auto rc = cuptiGetLastError();
   if (rc != CUPTI_SUCCESS && !State->has_cupti_callback_errored) {
     //State->has_cupti_callback_errored = true;
-    std::cerr << "ERROR HANDLING CALLBACK: " << get_cupti_error(rc) << std::endl;
+    std::cerr << "PROFILER: ERROR HANDLING CALLBACK: " << get_cupti_error(rc) << std::endl;
     return;
   }
 
@@ -377,7 +380,7 @@ std::string activity_object_kind_to_string(CUpti_ActivityObjectKind kind)
 void print_buffer(uint8_t* buffer, size_t valid_size)
 {
   if (valid_size > 0) {
-    std::cerr << "GOT A BUFFER OF DATA FROM CUPTI, SIZE: " << valid_size << std::endl;
+    std::cerr << "PROFILER: GOT A BUFFER OF DATA FROM CUPTI, SIZE: " << valid_size << std::endl;
     CUpti_Activity* record_ptr = nullptr;
     auto rc = cuptiActivityGetNextRecord(buffer, valid_size, &record_ptr);
     while (rc == CUPTI_SUCCESS) {
@@ -448,19 +451,16 @@ void print_buffer(uint8_t* buffer, size_t valid_size)
 void CUPTIAPI buffer_requested_callback(uint8_t** buffer_ptr_ptr, size_t* size_ptr,
     size_t* max_num_records_ptr)
 {
-  std::cerr << "BUFFER REQUEST CALLBACK" << std::endl;
-  {
-    *max_num_records_ptr = 0;
-    auto buffer = State->free_buffers.get();
-    buffer->release(buffer_ptr_ptr, size_ptr);
-  }
-  std::cerr << "BUFFER REQUEST CALLBACK COMPLETED" << std::endl;
+  std::cerr << "PROFILER: BUFFER REQUEST CALLBACK" << std::endl;
+  *max_num_records_ptr = 0;
+  auto buffer = State->free_buffers.get();
+  buffer->release(buffer_ptr_ptr, size_ptr);
 }
 
 void CUPTIAPI buffer_completed_callback(CUcontext, uint32_t,
     uint8_t* buffer, size_t buffer_size, size_t valid_size)
 {
-  std::cerr << "BUFFER COMPLETED CALLBACK" << std::endl;
+  std::cerr << "PROFILER: BUFFER COMPLETED CALLBACK" << std::endl;
   State->completed_buffers.put(std::make_unique<profile_buffer>(buffer, valid_size));
 }
 
@@ -530,7 +530,7 @@ void process_buffer(profile_buffer& buffer)
 
 void writer_thread(JavaVM* vm, jobject j_writer)
 {
-  std::cerr << "WRITER THREAD START" << std::endl;
+  std::cerr << "PROFILER: WRITER THREAD START" << std::endl;
   //JNIEnv* env = attach_to_jvm(vm);
   //std::cerr << "WRITER THREAD JVM ATTACHED" << std::endl;
   auto buffer = State->completed_buffers.get();
@@ -541,7 +541,7 @@ void writer_thread(JavaVM* vm, jobject j_writer)
   }
   //std::cerr << "WRITER THREAD DETACHING" << std::endl;
   //vm->DetachCurrentThread();
-  std::cerr << "WRITER THREAD COMPLETED" << std::endl;
+  std::cerr << "PROFILER: WRITER THREAD COMPLETED" << std::endl;
 }
 
 }
@@ -558,7 +558,7 @@ JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeInit(JNIE
     // grab a global reference to the writer instance so it isn't garbage collected while
     // we're trying to use it
     State->j_writer = static_cast<jobject>(env->NewGlobalRef(j_writer));
-    //State->writer_thread = std::thread(writer_thread, get_jvm(env), j_writer);
+    State->writer_thread = std::thread(writer_thread, get_jvm(env), j_writer);
     auto rc = cuptiSubscribe(&State->subscriber_handle, callback_handler, nullptr);
     check_cupti(rc, "Error initializing CUPTI");
     rc = cuptiEnableCallback(1, State->subscriber_handle, CUPTI_CB_DOMAIN_RUNTIME_API,
@@ -618,14 +618,14 @@ extern "C" CUptiResult CUPTIAPI cuptiNvtxInitialize2(void* pfnGetExportTable);
 
 extern "C" int InitializeInjectionNvtx(void* p)
 {
-  std::cerr << "INIT NVTX V1 CALLED" << std::endl;
+  std::cerr << "PROFILER: INIT NVTX V1 CALLED" << std::endl;
   CUptiResult res = cuptiNvtxInitialize(p);
   return (res == CUPTI_SUCCESS) ? 1 : 0;
 }
 
 extern "C" int InitializeInjectionNvtx2(void* p)
 {
-  std::cerr << "INIT NVTX V2 CALLED" << std::endl;
+  std::cerr << "PROFILER: INIT NVTX V2 CALLED" << std::endl;
   CUptiResult res = cuptiNvtxInitialize2(p);
   return (res == CUPTI_SUCCESS) ? 1 : 0;
 }
