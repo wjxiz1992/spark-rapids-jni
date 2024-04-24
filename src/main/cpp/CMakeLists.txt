@@ -60,6 +60,9 @@ set(SPARK_RAPIDS_JNI_CUDA_DEFINITIONS "")
 set(SPARK_RAPIDS_JNI_BUILD_TESTS ${BUILD_TESTS})
 set(SPARK_RAPIDS_JNI_BUILD_BENCHMARKS ${BUILD_BENCHMARKS})
 set(SPARK_RAPIDS_JNI_BUILD_FAULTINJ ${BUILD_FAULTINJ})
+if(NOT SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR)
+  set(SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR ${SPARK_RAPIDS_JNI_BINARY_DIR}/generated-includes)
+endif()
 
 # Set RMM logging level
 set(RMM_LOGGING_LEVEL
@@ -258,7 +261,7 @@ add_dependencies(cudfjnistub spark_rapids_jni)
 if(USE_GDS)
   include(${CUDF_DIR}/cpp/cmake/Modules/FindcuFile.cmake)
   find_library(CUFILEJNI_LIB "libcufilejni.a" REQUIRED NO_DEFAULT_PATH
-    HINTS "${PROJECT_BINARY_DIR}/../libcudfjni"
+    HINTS "${SPARK_RAPIDS_JNI_BINARY_DIR}/../libcudfjni"
   )
   add_library(cufilejni SHARED src/emptyfile.cpp)
   set_target_properties(
@@ -281,10 +284,25 @@ if(USE_GDS)
 endif()
 
 # ##################################################################################################
+# * flatbuffer generation---------------------------------------------------------------------------
+
+add_custom_command(
+  OUTPUT ${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/profiler_generated.h
+  DEPENDS ${SPARK_RAPIDS_JNI_SOURCE_DIR}/../fbs/profiler.fbs
+  WORKING_DIRECTORY ${SPARK_RAPIDS_JNI_SOURCE_DIR}/../fbs
+  VERBATIM
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}"
+  COMMAND
+    flatc --cpp -o "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}" profiler.fbs
+  COMMENT "Generating profiler flatbuffer code"
+)
+
+# ##################################################################################################
 # * profiler JNI -----------------------------------------------------------------------------------
 
 add_library(profilerjni SHARED
   src/ProfilerJni.cpp
+  ${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/profiler_generated.h
 )
 
 set_target_properties(
@@ -300,6 +318,7 @@ target_include_directories(
   profilerjni
   PRIVATE "${JNI_INCLUDE_DIRS}"
           "${CUDAToolkit_INCLUDE_DIRS}"
+          "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}"
 )
 
 find_library(CUPTI_LIBRARY_PATH cupti PATHS
