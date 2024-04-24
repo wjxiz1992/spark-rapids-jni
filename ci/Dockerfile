@@ -71,6 +71,7 @@ RUN cd /usr/local && wget --quiet https://archives.boost.io/release/1.79.0/sourc
    rm -rf boost_1_79_0
 
 # flatbuffers
+# TODO: Add to arm64 Dockerfile.multi
 ARG FLATBUFFER_VERSION=v24.3.25
 RUN cd /tmp && git clone --depth 1 --branch ${FLATBUFFER_VERSION} https://github.com/google/flatbuffers.git \
   && cd flatbuffers \
