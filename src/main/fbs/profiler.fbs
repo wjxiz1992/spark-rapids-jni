@@ -1,0 +1,52 @@
+// Copyright (c) 2024, NVIDIA CORPORATION.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Flatbuffer schema for the profiler
+
+namespace spark_rapids_jni.profiler;
+
+union ActivityRecord {
+  DeviceActivity
+
+}
+
+table DeviceActivity {
+  global_memory_bandwidth:uint64;
+  global_memory_size:uint64;
+  constant_memory_size:uint32;
+  l2_cache_size:uint32;
+  num_threads_per_warp:uint32;
+  core_clock_rate:uint32;
+  num_memcpy_engines:uint32;
+  num_multiprocessors:uint32;
+  max_ipc:uint32;
+  max_warps_per_multiprocessor:uint32;
+  max_blocks_per_multiprocessor:uint32;
+  max_shared_memory_per_multiprocessor:uint32;
+  max_registers_per_multiprocessor:uint32;
+  max_registers_per_block:uint32;
+  max_shared_memory_per_block:uint32;
+  max_threads_per_block:uint32;
+  max_block_dim_x:uint32;
+  max_block_dim_y:uint32;
+  max_block_dim_z:uint32;
+  max_grid_dim_x:uint32;
+  max_grid_dim_y:uint32;
+  max_grid_dim_z:uint32;
+  compute_capability_major:uint32;
+  compute_capability_minor:uint32;
+  id:uint32;
+  ecc_enabled:uint32;
+  name:string;
+}
