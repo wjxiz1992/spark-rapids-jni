@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include "profiler_generated.h"
+
 #include <cupti.h>
 #include <jni.h>
 
@@ -53,12 +55,36 @@
 
 // END HACK - FIXME
 
-
 namespace {
 
 constexpr size_t ALIGN_BYTES = 8;
 constexpr size_t BUFF_SIZE = 8 * 1024 * 1024;
 constexpr char const* DATA_WRITER_CLASS = "com/nvidia/spark/rapids/jni/Profiler$DataWriter";
+constexpr uint32_t PROFILE_VERSION = 1;
+
+JavaVM* get_jvm(JNIEnv* env)
+{
+  JavaVM* vm;
+  if (env->GetJavaVM(&vm) != 0) {
+    throw std::runtime_error("Unable to get JavaVM");
+  }
+  return vm;
+}
+
+JNIEnv* attach_to_jvm(JavaVM* vm)
+{
+  JavaVMAttachArgs args;
+  args.version = JNI_VERSION_1_6;
+  args.name = const_cast<char*>("profiler writer");
+  args.group = nullptr;
+  JNIEnv* env;
+  if (vm->AttachCurrentThread(reinterpret_cast<void**>(&env), &args) != JNI_OK) {
+    char const* msg = "PROFILER: UNABLE TO ATTACH TO JVM";
+    std::cerr << msg << std::endl;
+    throw std::runtime_error(msg);
+  }
+  return env;
+}
 
 struct profile_buffer {
   profile_buffer() : _size(BUFF_SIZE), _valid_size(0) {
@@ -165,17 +191,33 @@ private:
   std::stack<std::unique_ptr<profile_buffer>> _buffers;
 };
 
+void writer_thread_process(JavaVM* vm);
+
 struct subscriber_state {
   JNIEnv* jni;
   CUpti_SubscriberHandle subscriber_handle;
   bool has_cupti_callback_errored;
   jobject j_writer;
+  flatbuffers::FlatBufferBuilder fb_builder;
+  profile_buffer fb_data;
   std::thread writer_thread;
   free_buffer_tracker free_buffers;
   completed_buffer_queue completed_buffers;
 
-  subscriber_state(JNIEnv* env)
-    : jni(env), has_cupti_callback_errored(false) {}
+  subscriber_state(JNIEnv* env, jobject writer)
+    : jni(env), has_cupti_callback_errored(false), fb_builder(1024)
+  {
+    // grab a global reference to the writer instance so it isn't garbage collected
+    j_writer = static_cast<jobject>(env->NewGlobalRef(writer));
+    if (j_writer == nullptr) {
+      throw std::runtime_error("Unable to create a global reference to writer");
+    }
+    writer_thread = std::thread(writer_thread_process, get_jvm(env));
+  }
+
+  ~subscriber_state() {
+    jni->DeleteGlobalRef(j_writer);
+  }
 };
 
 
@@ -499,46 +541,143 @@ void setup_nvtx_env(JNIEnv* env, jstring j_lib_path)
   env->ReleaseStringUTFChars(j_lib_path, lib_path);
 }
 
-JavaVM* get_jvm(JNIEnv* env)
+// TODO: This should be a state method
+void flush_fb()
 {
-  JavaVM* vm;
-  if (env->GetJavaVM(&vm) != 0) {
-    throw std::runtime_error("Unable to get JavaVM");
+  if (State->fb_data.valid_size() > 0) {
+    std::cerr << "PROFILER: FLUSHING BYTEBUFFER TO WRITER" << std::endl;
+    auto bytebuf_obj = State->jni->NewDirectByteBuffer(State->fb_data.data(), State->fb_data.valid_size());
+    if (bytebuf_obj != nullptr) {
+      State->jni->CallVoidMethod(State->j_writer, Data_writer_write_method, bytebuf_obj);
+    } else {
+      std::cerr << "PROFILER: ERROR CREATING BYTEBUFFER FOR WRITER" << std::endl;
+    }
+    State->fb_data.set_valid_size(0);
   }
-  return vm;
 }
 
-JNIEnv* attach_to_jvm(JavaVM* vm)
+// TODO: This should be a state method
+void write_current_fb()
 {
-  JavaVMAttachArgs args;
-  args.version = JNI_VERSION_1_6;
-  args.name = const_cast<char*>("profiler writer");
-  args.group = nullptr;
-  JNIEnv* env;
-  if (vm->AttachCurrentThread(reinterpret_cast<void**>(&env), &args) != JNI_OK) {
-    char const* msg = "PROFILER: UNABLE TO ATTACH TO JVM";
-    std::cerr << msg << std::endl;
-    throw std::runtime_error(msg);
+  auto fb_size = State->fb_builder.GetSize();
+  if (fb_size > State->fb_data.size()) {
+    std::cerr << "PROFILER: DROPPING OVERSIZED RECORD OF SIZE=" << fb_size
+      << " BUFFER SIZE=" << State->fb_data.size() << std::endl;
+  } else {
+    auto fb = State->fb_builder.GetBufferPointer();
+    if (State->fb_data.valid_size() + fb_size > State->fb_data.size()) {
+      flush_fb();
+    }
+    std::memcpy(State->fb_data.data() + State->fb_data.valid_size(), fb, fb_size);
+    State->fb_data.set_valid_size(State->fb_data.valid_size() + fb_size);
   }
-  return env;
+  State->fb_builder.Clear();
 }
 
-void process_buffer(profile_buffer& buffer)
+void emit_profile_header()
 {
-  print_buffer(buffer.data(), buffer.valid_size());
+  auto& fbb = State->fb_builder;
+  auto magic = fbb.CreateString("spark-rapids Profile");
+  // TODO: This needs to be passed in by Java during init
+  auto writer_version = fbb.CreateString("24.06.0");
+  auto header = spark_rapids_jni::profiler::CreateProfileHeader(fbb, magic, PROFILE_VERSION, writer_version);
+  fbb.Finish(header);
+  write_current_fb();
 }
 
-void writer_thread(JavaVM* vm, jobject j_writer)
+void emit_dropped_records(size_t num_dropped)
+{
+  auto& fbb = State->fb_builder;
+  auto dropped_fb = spark_rapids_jni::profiler::CreateDroppedRecords(fbb, num_dropped);
+  fbb.Finish(dropped_fb);
+  write_current_fb();
+}
+
+void emit_device_activity(CUpti_ActivityDevice4 const* r)
+{
+  auto& fbb = State->fb_builder;
+  auto name = fbb.CreateString(r->name);
+  spark_rapids_jni::profiler::DeviceActivityBuilder dab(fbb);
+  dab.add_global_memory_bandwidth(r->globalMemoryBandwidth);
+  dab.add_global_memory_size(r->globalMemorySize);
+  dab.add_constant_memory_size(r->constantMemorySize);
+  dab.add_l2_cache_size(r->l2CacheSize);
+  dab.add_num_threads_per_warp(r->numThreadsPerWarp);
+  dab.add_core_clock_rate(r->coreClockRate);
+  dab.add_num_memcpy_engines(r->numMemcpyEngines);
+  dab.add_num_multiprocessors(r->numMultiprocessors);
+  dab.add_max_ipc(r->maxIPC);
+  dab.add_max_warps_per_multiprocessor(r->maxWarpsPerMultiprocessor);
+  dab.add_max_blocks_per_multiprocessor(r->maxBlocksPerMultiprocessor);
+  dab.add_max_shared_memory_per_multiprocessor(r->maxSharedMemoryPerMultiprocessor);
+  dab.add_max_registers_per_multiprocessor(r->maxRegistersPerMultiprocessor);
+  dab.add_max_registers_per_block(r->maxRegistersPerBlock);
+  dab.add_max_shared_memory_per_block(r->maxSharedMemoryPerBlock);
+  dab.add_max_threads_per_block(r->maxThreadsPerBlock);
+  dab.add_max_block_dim_x(r->maxBlockDimX);
+  dab.add_max_block_dim_y(r->maxBlockDimY);
+  dab.add_max_block_dim_z(r->maxBlockDimZ);
+  dab.add_max_grid_dim_x(r->maxGridDimX);
+  dab.add_max_grid_dim_y(r->maxGridDimY);
+  dab.add_max_grid_dim_z(r->maxGridDimZ);
+  dab.add_compute_capability_major(r->computeCapabilityMajor);
+  dab.add_compute_capability_minor(r->computeCapabilityMinor);
+  dab.add_id(r->id);
+  dab.add_ecc_enabled(r->eccEnabled);
+  dab.add_name(name);
+  auto device_fb = dab.Finish();
+  fbb.Finish(device_fb);
+  write_current_fb();
+}
+
+void report_num_dropped_records()
+{
+  size_t num_dropped = 0;
+  auto rc = cuptiActivityGetNumDroppedRecords(NULL, 0, &num_dropped);
+  if (rc == CUPTI_SUCCESS && num_dropped > 0) {
+    emit_dropped_records(num_dropped);
+  }
+}
+
+void process_buffer(uint8_t* buffer, size_t valid_size)
+{
+#if 1
+  print_buffer(buffer, valid_size);
+#endif
+
+  report_num_dropped_records();
+  if (valid_size > 0) {
+    CUpti_Activity* record_ptr = nullptr;
+    auto rc = cuptiActivityGetNextRecord(buffer, valid_size, &record_ptr);
+    while (rc == CUPTI_SUCCESS) {
+      switch (record_ptr->kind) {
+        case CUPTI_ACTIVITY_KIND_DEVICE:
+        {
+          auto device_record = reinterpret_cast<CUpti_ActivityDevice4 const*>(record_ptr);
+          emit_device_activity(device_record);
+        }
+        break;
+        default:
+          std::cerr << "IGNORING ACTIVITY RECORD " << activity_kind_to_string(record_ptr->kind) << std::endl;
+          break;
+      }
+      rc = cuptiActivityGetNextRecord(buffer, valid_size, &record_ptr);
+    }
+  }
+}
+
+void writer_thread_process(JavaVM* vm)
 {
   std::cerr << "PROFILER: WRITER THREAD START" << std::endl;
   //JNIEnv* env = attach_to_jvm(vm);
   //std::cerr << "WRITER THREAD JVM ATTACHED" << std::endl;
   auto buffer = State->completed_buffers.get();
   while (buffer) {
-    process_buffer(*buffer);
+    process_buffer(buffer->data(), buffer->valid_size());
     State->free_buffers.put(std::move(buffer));
     buffer = State->completed_buffers.get();
   }
+  flush_fb();
   //std::cerr << "WRITER THREAD DETACHING" << std::endl;
   //vm->DetachCurrentThread();
   std::cerr << "PROFILER: WRITER THREAD COMPLETED" << std::endl;
@@ -554,11 +693,9 @@ JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeInit(JNIE
   try {
     cache_writer_callback_method(env);
     setup_nvtx_env(env, j_lib_path);
-    State = new subscriber_state(env);
-    // grab a global reference to the writer instance so it isn't garbage collected while
-    // we're trying to use it
-    State->j_writer = static_cast<jobject>(env->NewGlobalRef(j_writer));
-    State->writer_thread = std::thread(writer_thread, get_jvm(env), j_writer);
+    State = new subscriber_state(env, j_writer);
+    std::cerr << "EMITTING HEADER" << std::endl;
+    emit_profile_header();
     auto rc = cuptiSubscribe(&State->subscriber_handle, callback_handler, nullptr);
     check_cupti(rc, "Error initializing CUPTI");
     rc = cuptiEnableCallback(1, State->subscriber_handle, CUPTI_CB_DOMAIN_RUNTIME_API,
@@ -599,7 +736,6 @@ JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeShutdown(
       auto flush_rc = cuptiActivityFlushAll(1);
       State->completed_buffers.shutdown();
       State->writer_thread.join();
-      env->DeleteGlobalRef(State->j_writer);
       delete State;
       State = nullptr;
       free_writer_callback_cache(env);
