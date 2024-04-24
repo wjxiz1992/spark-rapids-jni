@@ -71,5 +71,13 @@ RUN cd /usr/local && wget --quiet https://archives.boost.io/release/1.79.0/sourc
    cd /usr/local && \
    rm -rf boost_1_79_0
 
+# flatbuffers
+ARG FLATBUFFER_VERSION=v24.3.25
+RUN cd /tmp && git clone --depth 1 --branch ${FLATBUFFER_VERSION} https://github.com/google/flatbuffers.git \
+  && cd flatbuffers \
+  && scl enable devtoolset-${DEVTOOLSET_VERSION} "cmake -G Ninja && cmake --build . && cmake --install ." \
+  && cd .. \
+  && rm -rf flatbuffers
+
 # disable cuda container constraints to allow running w/ elder drivers on data-center GPUs
 ENV NVIDIA_DISABLE_REQUIRE="true"
