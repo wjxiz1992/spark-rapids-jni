@@ -16,9 +16,19 @@
 
 namespace spark_rapids_jni.profiler;
 
-union ActivityRecord {
-  DeviceActivity
+table ProfileHeader {
+  magic:string;
+  version:uint32;
+  writer_version:string;
+}
 
+union ActivityRecord {
+  DeviceActivity,
+  DroppedRecords
+}
+
+table DroppedRecords {
+  num_dropped:uint64;
 }
 
 table DeviceActivity {
