@@ -194,7 +194,7 @@ private:
 void writer_thread_process(JavaVM* vm);
 
 struct subscriber_state {
-  JNIEnv* jni;
+  JNIEnv* writer_env;
   CUpti_SubscriberHandle subscriber_handle;
   bool has_cupti_callback_errored;
   jobject j_writer;
@@ -205,18 +205,8 @@ struct subscriber_state {
   completed_buffer_queue completed_buffers;
 
   subscriber_state(JNIEnv* env, jobject writer)
-    : jni(env), has_cupti_callback_errored(false), fb_builder(1024)
+    : writer_env(nullptr), j_writer(nullptr), has_cupti_callback_errored(false), fb_builder(8 * 1024)
   {
-    // grab a global reference to the writer instance so it isn't garbage collected
-    j_writer = static_cast<jobject>(env->NewGlobalRef(writer));
-    if (j_writer == nullptr) {
-      throw std::runtime_error("Unable to create a global reference to writer");
-    }
-    writer_thread = std::thread(writer_thread_process, get_jvm(env));
-  }
-
-  ~subscriber_state() {
-    jni->DeleteGlobalRef(j_writer);
   }
 };
 
@@ -545,10 +535,13 @@ void setup_nvtx_env(JNIEnv* env, jstring j_lib_path)
 void flush_fb()
 {
   if (State->fb_data.valid_size() > 0) {
+    JNIEnv* env = State->writer_env;
     std::cerr << "PROFILER: FLUSHING BYTEBUFFER TO WRITER" << std::endl;
-    auto bytebuf_obj = State->jni->NewDirectByteBuffer(State->fb_data.data(), State->fb_data.valid_size());
+    std::cerr << "ALLOCATING NEW DIRECT BYTE BUFFER for buffer at " << static_cast<void*>(State->fb_data.data()) << " SIZE=" << State->fb_data.valid_size() << std::endl;
+    auto bytebuf_obj = env->NewDirectByteBuffer(State->fb_data.data(), State->fb_data.valid_size());
     if (bytebuf_obj != nullptr) {
-      State->jni->CallVoidMethod(State->j_writer, Data_writer_write_method, bytebuf_obj);
+      std::cerr << "CALLING WRITE METHOD" << std::endl;
+      env->CallVoidMethod(State->j_writer, Data_writer_write_method, bytebuf_obj);
     } else {
       std::cerr << "PROFILER: ERROR CREATING BYTEBUFFER FOR WRITER" << std::endl;
     }
@@ -581,7 +574,7 @@ void emit_profile_header()
   // TODO: This needs to be passed in by Java during init
   auto writer_version = fbb.CreateString("24.06.0");
   auto header = spark_rapids_jni::profiler::CreateProfileHeader(fbb, magic, PROFILE_VERSION, writer_version);
-  fbb.Finish(header);
+  fbb.FinishSizePrefixed(header);
   write_current_fb();
 }
 
@@ -589,7 +582,7 @@ void emit_dropped_records(size_t num_dropped)
 {
   auto& fbb = State->fb_builder;
   auto dropped_fb = spark_rapids_jni::profiler::CreateDroppedRecords(fbb, num_dropped);
-  fbb.Finish(dropped_fb);
+  fbb.FinishSizePrefixed(dropped_fb);
   write_current_fb();
 }
 
@@ -626,7 +619,7 @@ void emit_device_activity(CUpti_ActivityDevice4 const* r)
   dab.add_ecc_enabled(r->eccEnabled);
   dab.add_name(name);
   auto device_fb = dab.Finish();
-  fbb.Finish(device_fb);
+  fbb.FinishSizePrefixed(device_fb);
   write_current_fb();
 }
 
@@ -669,8 +662,8 @@ void process_buffer(uint8_t* buffer, size_t valid_size)
 void writer_thread_process(JavaVM* vm)
 {
   std::cerr << "PROFILER: WRITER THREAD START" << std::endl;
-  //JNIEnv* env = attach_to_jvm(vm);
-  //std::cerr << "WRITER THREAD JVM ATTACHED" << std::endl;
+  State->writer_env = attach_to_jvm(vm);
+  std::cerr << "WRITER THREAD JVM ATTACHED" << std::endl;
   auto buffer = State->completed_buffers.get();
   while (buffer) {
     process_buffer(buffer->data(), buffer->valid_size());
@@ -678,8 +671,8 @@ void writer_thread_process(JavaVM* vm)
     buffer = State->completed_buffers.get();
   }
   flush_fb();
-  //std::cerr << "WRITER THREAD DETACHING" << std::endl;
-  //vm->DetachCurrentThread();
+  std::cerr << "WRITER THREAD DETACHING" << std::endl;
+  vm->DetachCurrentThread();
   std::cerr << "PROFILER: WRITER THREAD COMPLETED" << std::endl;
 }
 
@@ -694,6 +687,12 @@ JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeInit(JNIE
     cache_writer_callback_method(env);
     setup_nvtx_env(env, j_lib_path);
     State = new subscriber_state(env, j_writer);
+    // grab a global reference to the writer instance so it isn't garbage collected
+    State->j_writer = static_cast<jobject>(env->NewGlobalRef(j_writer));
+    if (State->j_writer == nullptr) {
+      throw std::runtime_error("Unable to create a global reference to writer");
+    }
+    State->writer_thread = std::thread(writer_thread_process, get_jvm(env));
     std::cerr << "EMITTING HEADER" << std::endl;
     emit_profile_header();
     auto rc = cuptiSubscribe(&State->subscriber_handle, callback_handler, nullptr);
@@ -736,6 +735,7 @@ JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeShutdown(
       auto flush_rc = cuptiActivityFlushAll(1);
       State->completed_buffers.shutdown();
       State->writer_thread.join();
+      env->DeleteGlobalRef(State->j_writer);
       delete State;
       State = nullptr;
       free_writer_callback_cache(env);
