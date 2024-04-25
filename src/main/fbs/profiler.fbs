@@ -22,9 +22,16 @@ table ProfileHeader {
   writer_version:string;
 }
 
-union ActivityRecord {
+union Activity {
+  ApiActivity,
   DeviceActivity,
-  DroppedRecords
+  DroppedRecords,
+  MarkerActivity,
+  MarkerData
+}
+
+table ActivityRecord {
+  record:Activity;
 }
 
 enum ApiKind:byte {
