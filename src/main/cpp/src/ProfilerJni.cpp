@@ -650,7 +650,9 @@ void emit_api_activity(CUpti_ActivityAPI const* r)
   aab.add_correlation_id(r->correlationId);
   aab.add_return_value(r->returnValue);
   auto api_fb = aab.Finish();
-  fbb.FinishSizePrefixed(api_fb);
+  auto record = spark_rapids_jni::profiler::CreateActivityRecord(fbb,
+    spark_rapids_jni::profiler::Activity_ApiActivity, api_fb.Union());
+  fbb.FinishSizePrefixed(record);
   write_current_fb();
 }
 
