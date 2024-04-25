@@ -47,7 +47,7 @@ table ApiActivity {
   process_id:uint32;
   thread_id:uint32;
   correlation_id:uint32;
-  return_value:uint32;
+  return_value:uint32 = 0;
 }
 
 table DeviceActivity {
@@ -94,24 +94,6 @@ enum MarkerFlags:uint8 (bit_flags) {
   SyncRelease = 6
 }
 
-enum ActivityObjectKind:uint8 {
-  Unknown = 0,
-  Process = 1,
-  Thread = 2,
-  Device = 3,
-  Context = 4,
-  Stream = 5
-}
-
-enum MetricValueKind:uint8 {
-  Double = 0,
-  Uint64 = 1,
-  Percent = 2,
-  Throughput = 3,
-  Int64 = 4,
-  UtilizationLevel = 5
-}
-
 table ActivityObjectId {
   process_id:uint32;  // present if object kind is Process or Thread
   thread_id:uint32;   // present if object kind is Thread
@@ -124,7 +106,6 @@ table MarkerActivity {
   flags:MarkerFlags = Start;
   timestamp:uint64;
   id:int32;
-  object_kind:ActivityObjectKind = Thread;
   object_id:ActivityObjectId;
   name:string;
   domain:string;
