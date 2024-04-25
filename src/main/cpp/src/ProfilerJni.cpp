@@ -567,24 +567,6 @@ void write_current_fb()
   State->fb_builder.Clear();
 }
 
-spark_rapids_jni::profiler::ActivityObjectKind object_kind_to_fb(CUpti_ActivityObjectKind kind)
-{
-  switch (kind) {
-    case CUPTI_ACTIVITY_OBJECT_PROCESS:
-      return spark_rapids_jni::profiler::ActivityObjectKind_Process;
-    case CUPTI_ACTIVITY_OBJECT_THREAD:
-      return spark_rapids_jni::profiler::ActivityObjectKind_Thread;
-    case CUPTI_ACTIVITY_OBJECT_DEVICE:
-      return spark_rapids_jni::profiler::ActivityObjectKind_Device;
-    case CUPTI_ACTIVITY_OBJECT_CONTEXT:
-      return spark_rapids_jni::profiler::ActivityObjectKind_Context;
-    case CUPTI_ACTIVITY_OBJECT_STREAM:
-      return spark_rapids_jni::profiler::ActivityObjectKind_Stream;
-    default:
-      return spark_rapids_jni::profiler::ActivityObjectKind_Unknown;
-  }
-}
-
 spark_rapids_jni::profiler::MarkerFlags marker_flags_to_fb(CUpti_ActivityFlag flags)
 {
   uint8_t result = 0;
@@ -743,7 +725,6 @@ void emit_marker_activity(CUpti_ActivityMarker2 const* r)
   mab.add_flags(marker_flags_to_fb(r->flags));
   mab.add_timestamp(r->timestamp);
   mab.add_id(r->id);
-  mab.add_object_kind(object_kind_to_fb(r->objectKind));
   mab.add_object_id(object_id);
   mab.add_name(name);
   mab.add_domain(domain);
