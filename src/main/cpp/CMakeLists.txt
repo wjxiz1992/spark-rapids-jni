@@ -321,7 +321,7 @@ target_include_directories(
           "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}"
 )
 
-find_library(CUPTI_LIBRARY_PATH cupti PATHS
+find_library(CUPTI_LIBRARY_PATH cupti_static PATHS
   "/usr/local/cuda/lib64"
   "/usr/local/cuda/extras/CUPTI/lib64"
 )
