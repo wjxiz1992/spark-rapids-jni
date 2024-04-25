@@ -27,8 +27,20 @@ union ActivityRecord {
   DroppedRecords
 }
 
-table DroppedRecords {
-  num_dropped:uint64;
+enum ApiKind:byte {
+  Driver = 0,
+  Runtime = 1
+}
+
+table ApiActivity {
+  kind:ApiKind = Runtime;
+  cbid:uint32;
+  start:uint64;
+  end:uint64;
+  process_id:uint32;
+  thread_id:uint32;
+  correlation_id:uint32;
+  return_value:uint32;
 }
 
 table DeviceActivity {
@@ -59,4 +71,63 @@ table DeviceActivity {
   id:uint32;
   ecc_enabled:uint32;
   name:string;
+}
+
+table DroppedRecords {
+  num_dropped:uint64;
+}
+
+enum MarkerFlags:uint8 (bit_flags) {
+  Instantaneous = 0,
+  Start = 1,
+  End = 2,
+  SyncAcquire = 3,
+  SyncAcquireSuccess = 4,
+  SyncAcquireFailed = 5,
+  SyncRelease = 6
+}
+
+enum ActivityObjectKind:uint8 {
+  Unknown = 0,
+  Process = 1,
+  Thread = 2,
+  Device = 3,
+  Context = 4,
+  Stream = 5
+}
+
+enum MetricValueKind:uint8 {
+  Double = 0,
+  Uint64 = 1,
+  Percent = 2,
+  Throughput = 3,
+  Int64 = 4,
+  UtilizationLevel = 5
+}
+
+table ActivityObjectId {
+  process_id:uint32;  // present if object kind is Process or Thread
+  thread_id:uint32;   // present if object kind is Thread
+  device_id:uint32;   // present if object kind is Device or Context or Stream
+  context_id:uint32;  // present if object kind is Context or Stream
+  stream_id:uint32;   // present if object kind is Stream
+}
+
+table MarkerActivity {
+  flags:MarkerFlags = Start;
+  timestamp:uint64;
+  id:int32;
+  object_kind:ActivityObjectKind = Thread;
+  object_id:ActivityObjectId;
+  name:string;
+  domain:string;
+}
+
+table MarkerData {
+  flags:MarkerFlags = Start;
+  id:int32;
+  //payload_kind:MetricValueKind;
+  //payload:MetricValue;
+  color:uint32;
+  category:uint32;
 }
