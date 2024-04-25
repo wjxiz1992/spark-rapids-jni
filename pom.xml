@@ -497,36 +497,6 @@
         </executions>
       </plugin>
       <plugin>
-        <groupId>org.codehaus.gmaven</groupId>
-        <artifactId>gmaven-plugin</artifactId>
-        <version>1.5</version>
-        <executions>
-          <execution>
-            <id>setproperty</id>
-            <phase>generate-resources</phase>
-            <goals>
-              <goal>execute</goal>
-            </goals>
-            <configuration>
-              <source>
-                def sout = new StringBuffer(), serr = new StringBuffer()
-                //This only works on linux
-                def proc = 'ldd ${native.build.path}/libprofilerjni.so'.execute()
-                proc.consumeProcessOutput(sout, serr)
-                proc.waitForOrKill(10000)
-                def libcupti = ~/libcupti\\.so.*\\s+=>\\s+(.*)libcupti\\.so.*/
-                def m = libcupti.matcher(sout)
-                if (m.find()) {
-                  pom.properties['native.cupti.path'] = m.group(1)
-                } else {
-                  fail("Could not find cupti as a dependency of libprofilerjni out> $sout err> $serr")
-                }
-              </source>
-            </configuration>
-          </execution>
-        </executions>
-      </plugin>
-      <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
         <version>3.8.0</version>
@@ -580,13 +550,6 @@
                     <include>libnvcomp.so</include>
                     <include>libnvcomp_gdeflate.so</include>
                     <include>libnvcomp_bitcomp.so</include>
-                  </includes>
-                </resource>
-                <resource>
-                  <!--Set by groovy script-->
-                  <directory>${native.cupti.path}</directory>
-                  <includes>
-                    <include>libcupti.so</include>
                   </includes>
                 </resource>
               </resources>
