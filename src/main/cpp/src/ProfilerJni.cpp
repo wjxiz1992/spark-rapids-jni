@@ -567,22 +567,108 @@ void write_current_fb()
   State->fb_builder.Clear();
 }
 
-void emit_profile_header()
+spark_rapids_jni::profiler::ActivityObjectKind object_kind_to_fb(CUpti_ActivityObjectKind kind)
 {
-  auto& fbb = State->fb_builder;
-  auto magic = fbb.CreateString("spark-rapids Profile");
-  // TODO: This needs to be passed in by Java during init
-  auto writer_version = fbb.CreateString("24.06.0");
-  auto header = spark_rapids_jni::profiler::CreateProfileHeader(fbb, magic, PROFILE_VERSION, writer_version);
-  fbb.FinishSizePrefixed(header);
-  write_current_fb();
+  switch (kind) {
+    case CUPTI_ACTIVITY_OBJECT_PROCESS:
+      return spark_rapids_jni::profiler::ActivityObjectKind_Process;
+    case CUPTI_ACTIVITY_OBJECT_THREAD:
+      return spark_rapids_jni::profiler::ActivityObjectKind_Thread;
+    case CUPTI_ACTIVITY_OBJECT_DEVICE:
+      return spark_rapids_jni::profiler::ActivityObjectKind_Device;
+    case CUPTI_ACTIVITY_OBJECT_CONTEXT:
+      return spark_rapids_jni::profiler::ActivityObjectKind_Context;
+    case CUPTI_ACTIVITY_OBJECT_STREAM:
+      return spark_rapids_jni::profiler::ActivityObjectKind_Stream;
+    default:
+      return spark_rapids_jni::profiler::ActivityObjectKind_Unknown;
+  }
 }
 
-void emit_dropped_records(size_t num_dropped)
+spark_rapids_jni::profiler::MarkerFlags marker_flags_to_fb(CUpti_ActivityFlag flags)
 {
+  uint8_t result = 0;
+  if (flags & CUPTI_ACTIVITY_FLAG_MARKER_INSTANTANEOUS) {
+    result |= spark_rapids_jni::profiler::MarkerFlags_Instantaneous;
+  }
+  if (flags & CUPTI_ACTIVITY_FLAG_MARKER_START) {
+    result |= spark_rapids_jni::profiler::MarkerFlags_Start;
+  }
+  if (flags & CUPTI_ACTIVITY_FLAG_MARKER_END) {
+    result |= spark_rapids_jni::profiler::MarkerFlags_End;
+  }
+  if (flags & CUPTI_ACTIVITY_FLAG_MARKER_SYNC_ACQUIRE) {
+    result |= spark_rapids_jni::profiler::MarkerFlags_SyncAcquire;
+  }
+  if (flags & CUPTI_ACTIVITY_FLAG_MARKER_SYNC_ACQUIRE_SUCCESS) {
+    result |= spark_rapids_jni::profiler::MarkerFlags_SyncAcquireSuccess;
+  }
+  if (flags & CUPTI_ACTIVITY_FLAG_MARKER_SYNC_ACQUIRE_FAILED) {
+    result |= spark_rapids_jni::profiler::MarkerFlags_SyncAcquireFailed;
+  }
+  if (flags & CUPTI_ACTIVITY_FLAG_MARKER_SYNC_RELEASE) {
+    result |= spark_rapids_jni::profiler::MarkerFlags_SyncRelease;
+  }
+  return static_cast<spark_rapids_jni::profiler::MarkerFlags>(result);
+}
+
+flatbuffers::Offset<spark_rapids_jni::profiler::ActivityObjectId>
+add_object_id(flatbuffers::FlatBufferBuilder& fbb, CUpti_ActivityObjectKind kind,
+              CUpti_ActivityObjectKindId const& object_id)
+{
+  switch (kind) {
+    case CUPTI_ACTIVITY_OBJECT_PROCESS:
+    case CUPTI_ACTIVITY_OBJECT_THREAD:
+    {
+      spark_rapids_jni::profiler::ActivityObjectIdBuilder aoib(fbb);
+      aoib.add_process_id(object_id.pt.processId);
+      if (kind == CUPTI_ACTIVITY_OBJECT_THREAD) {
+        aoib.add_thread_id(object_id.pt.threadId);
+      }
+      return aoib.Finish();
+    }
+    case CUPTI_ACTIVITY_OBJECT_DEVICE:
+    case CUPTI_ACTIVITY_OBJECT_CONTEXT:
+    case CUPTI_ACTIVITY_OBJECT_STREAM:
+    {
+      spark_rapids_jni::profiler::ActivityObjectIdBuilder aoib(fbb);
+      aoib.add_device_id(object_id.dcs.deviceId);
+      if (kind == CUPTI_ACTIVITY_OBJECT_CONTEXT || kind == CUPTI_ACTIVITY_OBJECT_STREAM) {
+        aoib.add_context_id(object_id.dcs.contextId);
+        if (kind == CUPTI_ACTIVITY_OBJECT_STREAM) {
+          aoib.add_stream_id(object_id.dcs.streamId);
+        }
+      }
+      return aoib.Finish();
+    }
+    default:
+      std::cerr << "PROFILER: IGNORING RECORD WITH ACTIVITY OBJECT KIND " << kind << std::endl;
+      break;
+  }
+  return flatbuffers::Offset<spark_rapids_jni::profiler::ActivityObjectId>();
+}
+
+void emit_api_activity(CUpti_ActivityAPI const* r)
+{
+  auto api_kind = spark_rapids_jni::profiler::ApiKind_Runtime;
+  if (r->kind == CUPTI_ACTIVITY_KIND_DRIVER) {
+    api_kind = spark_rapids_jni::profiler::ApiKind_Driver;
+  } else if (r->kind != CUPTI_ACTIVITY_KIND_RUNTIME) {
+    std::cerr << "PROFILER: IGNORING API ACTIVITY RECORD KIND=" << activity_kind_to_string(r->kind) << std::endl;
+    return;
+  }
   auto& fbb = State->fb_builder;
-  auto dropped_fb = spark_rapids_jni::profiler::CreateDroppedRecords(fbb, num_dropped);
-  fbb.FinishSizePrefixed(dropped_fb);
+  spark_rapids_jni::profiler::ApiActivityBuilder aab(fbb);
+  aab.add_kind(api_kind);
+  aab.add_cbid(r->cbid);
+  aab.add_start(r->start);
+  aab.add_end(r->end);
+  aab.add_process_id(r->processId);
+  aab.add_thread_id(r->threadId);
+  aab.add_correlation_id(r->correlationId);
+  aab.add_return_value(r->returnValue);
+  auto api_fb = aab.Finish();
+  fbb.FinishSizePrefixed(api_fb);
   write_current_fb();
 }
 
@@ -623,6 +709,69 @@ void emit_device_activity(CUpti_ActivityDevice4 const* r)
   write_current_fb();
 }
 
+void emit_dropped_records(size_t num_dropped)
+{
+  auto& fbb = State->fb_builder;
+  auto dropped_fb = spark_rapids_jni::profiler::CreateDroppedRecords(fbb, num_dropped);
+  fbb.FinishSizePrefixed(dropped_fb);
+  write_current_fb();
+}
+
+void emit_marker_activity(CUpti_ActivityMarker2 const* r)
+{
+  auto& fbb = State->fb_builder;
+  auto object_id = add_object_id(fbb, r->objectKind, r->objectId);
+  if (object_id.IsNull()) {
+    fbb.Clear();
+    return;
+  }
+  auto has_name = r->name != nullptr;
+  auto has_domain = r->name != nullptr;
+  flatbuffers::Offset<flatbuffers::String> name;
+  flatbuffers::Offset<flatbuffers::String> domain;
+  if (has_name) {
+    name = fbb.CreateString(r->name);
+  }
+  if (has_domain) {
+    domain = fbb.CreateString(r->domain);
+  }
+  spark_rapids_jni::profiler::MarkerActivityBuilder mab(fbb);
+  mab.add_flags(marker_flags_to_fb(r->flags));
+  mab.add_timestamp(r->timestamp);
+  mab.add_id(r->id);
+  mab.add_object_kind(object_kind_to_fb(r->objectKind));
+  mab.add_object_id(object_id);
+  mab.add_name(name);
+  mab.add_domain(domain);
+  auto m = mab.Finish();
+  fbb.FinishSizePrefixed(m);
+  write_current_fb();
+}
+
+void emit_marker_data(CUpti_ActivityMarkerData const* r)
+{
+  auto& fbb = State->fb_builder;
+  spark_rapids_jni::profiler::MarkerDataBuilder mdb(fbb);
+  mdb.add_flags(marker_flags_to_fb(r->flags));
+  mdb.add_id(r->id);
+  mdb.add_color(r->color);
+  mdb.add_category(r->category);
+  auto m = mdb.Finish();
+  fbb.FinishSizePrefixed(m);
+  write_current_fb();
+}
+
+void emit_profile_header()
+{
+  auto& fbb = State->fb_builder;
+  auto magic = fbb.CreateString("spark-rapids Profile");
+  // TODO: This needs to be passed in by Java during init
+  auto writer_version = fbb.CreateString("24.06.0");
+  auto header = spark_rapids_jni::profiler::CreateProfileHeader(fbb, magic, PROFILE_VERSION, writer_version);
+  fbb.FinishSizePrefixed(header);
+  write_current_fb();
+}
+
 void report_num_dropped_records()
 {
   size_t num_dropped = 0;
@@ -648,8 +797,27 @@ void process_buffer(uint8_t* buffer, size_t valid_size)
         {
           auto device_record = reinterpret_cast<CUpti_ActivityDevice4 const*>(record_ptr);
           emit_device_activity(device_record);
+          break;
         }
-        break;
+        case CUPTI_ACTIVITY_KIND_DRIVER:
+        case CUPTI_ACTIVITY_KIND_RUNTIME:
+        {
+          auto api_record = reinterpret_cast<CUpti_ActivityAPI const*>(record_ptr);
+          emit_api_activity(api_record);
+          break;
+        }
+        case CUPTI_ACTIVITY_KIND_MARKER:
+        {
+          auto marker = reinterpret_cast<CUpti_ActivityMarker2 const*>(record_ptr);
+          emit_marker_activity(marker);
+          break;
+        }
+        case CUPTI_ACTIVITY_KIND_MARKER_DATA:
+        {
+          auto marker = reinterpret_cast<CUpti_ActivityMarkerData const*>(record_ptr);
+          emit_marker_data(marker);
+          break;
+        }
         default:
           std::cerr << "IGNORING ACTIVITY RECORD " << activity_kind_to_string(record_ptr->kind) << std::endl;
           break;
