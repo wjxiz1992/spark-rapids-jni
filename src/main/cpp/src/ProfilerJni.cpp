@@ -705,7 +705,9 @@ void emit_device_activity(CUpti_ActivityDevice4 const* r)
   dab.add_ecc_enabled(r->eccEnabled);
   dab.add_name(name);
   auto device_fb = dab.Finish();
-  fbb.FinishSizePrefixed(device_fb);
+  auto record = spark_rapids_jni::profiler::CreateActivityRecord(fbb,
+    spark_rapids_jni::profiler::Activity_DeviceActivity, device_fb.Union());
+  fbb.FinishSizePrefixed(record);
   write_current_fb();
 }
 
@@ -713,7 +715,9 @@ void emit_dropped_records(size_t num_dropped)
 {
   auto& fbb = State->fb_builder;
   auto dropped_fb = spark_rapids_jni::profiler::CreateDroppedRecords(fbb, num_dropped);
-  fbb.FinishSizePrefixed(dropped_fb);
+  auto record = spark_rapids_jni::profiler::CreateActivityRecord(fbb,
+    spark_rapids_jni::profiler::Activity_DroppedRecords, dropped_fb.Union());
+  fbb.FinishSizePrefixed(record);
   write_current_fb();
 }
 
@@ -744,7 +748,9 @@ void emit_marker_activity(CUpti_ActivityMarker2 const* r)
   mab.add_name(name);
   mab.add_domain(domain);
   auto m = mab.Finish();
-  fbb.FinishSizePrefixed(m);
+  auto record = spark_rapids_jni::profiler::CreateActivityRecord(fbb,
+    spark_rapids_jni::profiler::Activity_MarkerActivity, m.Union());
+  fbb.FinishSizePrefixed(record);
   write_current_fb();
 }
 
@@ -757,7 +763,9 @@ void emit_marker_data(CUpti_ActivityMarkerData const* r)
   mdb.add_color(r->color);
   mdb.add_category(r->category);
   auto m = mdb.Finish();
-  fbb.FinishSizePrefixed(m);
+  auto record = spark_rapids_jni::profiler::CreateActivityRecord(fbb,
+    spark_rapids_jni::profiler::Activity_MarkerData, m.Union());
+  fbb.FinishSizePrefixed(record);
   write_current_fb();
 }
 
