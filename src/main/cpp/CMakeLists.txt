@@ -164,6 +164,7 @@ add_library(
   src/RowConversionJni.cpp
   src/SparkResourceAdaptorJni.cpp
   src/TableOperationJni.cpp
+  src/StringDigitsPatternJni.cpp
   src/ZOrderJni.cpp
   src/bloom_filter.cu
   src/cast_decimal_to_string.cu
@@ -180,6 +181,7 @@ add_library(
   src/padding_partition.cu
   src/parse_uri.cu
   src/row_conversion.cu
+  src/string_digits_pattern.cu
   src/timezones.cu
   src/utilities.cu
   src/xxhash64.cu
