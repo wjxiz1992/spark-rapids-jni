@@ -594,6 +594,168 @@ spark_rapids_jni::profiler::MarkerFlags marker_flags_to_fb(CUpti_ActivityFlag fl
   return static_cast<spark_rapids_jni::profiler::MarkerFlags>(result);
 }
 
+spark_rapids_jni::profiler::ChannelType
+to_channel_type(CUpti_ChannelType t)
+{
+  switch (t) {
+    case CUPTI_CHANNEL_TYPE_INVALID:
+      return spark_rapids_jni::profiler::ChannelType_Invalid;
+    case CUPTI_CHANNEL_TYPE_COMPUTE:
+      return spark_rapids_jni::profiler::ChannelType_Compute;
+    case CUPTI_CHANNEL_TYPE_ASYNC_MEMCPY:
+      return spark_rapids_jni::profiler::ChannelType_AsyncMemcpy;
+    default:
+      std::cerr << "PROFILER: Unrecognized channel type: " << t << std::endl;
+      return spark_rapids_jni::profiler::ChannelType_Invalid;
+  }
+}
+
+spark_rapids_jni::profiler::LaunchType
+to_launch_type(uint8_t t)
+{
+  switch (t) {
+    case CUPTI_ACTIVITY_LAUNCH_TYPE_REGULAR:
+      return spark_rapids_jni::profiler::LaunchType_Regular;
+    case CUPTI_ACTIVITY_LAUNCH_TYPE_COOPERATIVE_SINGLE_DEVICE:
+      return spark_rapids_jni::profiler::LaunchType_CooperativeSingleDevice;
+    case CUPTI_ACTIVITY_LAUNCH_TYPE_COOPERATIVE_MULTI_DEVICE:
+      return spark_rapids_jni::profiler::LaunchType_CooperativeMultiDevice;
+    default:
+      std::cerr << "PROFILER: Unrecognized launch type: " << t << std::endl;
+      return spark_rapids_jni::profiler::LaunchType_Regular;
+  }
+}
+
+spark_rapids_jni::profiler::MemcpyFlags
+to_memcpy_flags(uint32_t flags)
+{
+  uint8_t result = 0;
+  if (flags & CUPTI_ACTIVITY_FLAG_MEMCPY_ASYNC) {
+    result |= spark_rapids_jni::profiler::MemcpyFlags_Async;
+  }
+  return static_cast<spark_rapids_jni::profiler::MemcpyFlags>(result);
+}
+
+spark_rapids_jni::profiler::MemcpyKind
+to_memcpy_kind(uint8_t k)
+{
+  switch (k) {
+    case CUPTI_ACTIVITY_MEMCPY_KIND_UNKNOWN:
+      return spark_rapids_jni::profiler::MemcpyKind_Unknown;
+    case CUPTI_ACTIVITY_MEMCPY_KIND_HTOD:
+      return spark_rapids_jni::profiler::MemcpyKind_HtoD;
+    case CUPTI_ACTIVITY_MEMCPY_KIND_DTOH:
+      return spark_rapids_jni::profiler::MemcpyKind_DtoH;
+    case CUPTI_ACTIVITY_MEMCPY_KIND_HTOA:
+      return spark_rapids_jni::profiler::MemcpyKind_HtoA;
+    case CUPTI_ACTIVITY_MEMCPY_KIND_ATOH:
+      return spark_rapids_jni::profiler::MemcpyKind_AtoH;
+    case CUPTI_ACTIVITY_MEMCPY_KIND_ATOA:
+      return spark_rapids_jni::profiler::MemcpyKind_AtoA;
+    case CUPTI_ACTIVITY_MEMCPY_KIND_ATOD:
+      return spark_rapids_jni::profiler::MemcpyKind_AtoD;
+    case CUPTI_ACTIVITY_MEMCPY_KIND_DTOA:
+      return spark_rapids_jni::profiler::MemcpyKind_DtoA;
+    case CUPTI_ACTIVITY_MEMCPY_KIND_DTOD:
+      return spark_rapids_jni::profiler::MemcpyKind_DtoD;
+    case CUPTI_ACTIVITY_MEMCPY_KIND_HTOH:
+      return spark_rapids_jni::profiler::MemcpyKind_HtoH;
+    case CUPTI_ACTIVITY_MEMCPY_KIND_PTOP:
+      return spark_rapids_jni::profiler::MemcpyKind_PtoP;
+    default:
+      std::cerr << "PROFILER: Unrecognized memcpy kind: " << k << std::endl;
+      return spark_rapids_jni::profiler::MemcpyKind_Unknown;
+  }
+}
+
+spark_rapids_jni::profiler::MemoryKind
+to_memory_kind(uint8_t k)
+{
+  switch (k) {
+    case CUPTI_ACTIVITY_MEMORY_KIND_UNKNOWN:
+      return spark_rapids_jni::profiler::MemoryKind_Unknown;
+    case CUPTI_ACTIVITY_MEMORY_KIND_PAGEABLE:
+      return spark_rapids_jni::profiler::MemoryKind_Pageable;
+    case CUPTI_ACTIVITY_MEMORY_KIND_PINNED:
+      return spark_rapids_jni::profiler::MemoryKind_Pinned;
+    case CUPTI_ACTIVITY_MEMORY_KIND_DEVICE:
+      return spark_rapids_jni::profiler::MemoryKind_Device;
+    case CUPTI_ACTIVITY_MEMORY_KIND_ARRAY:
+      return spark_rapids_jni::profiler::MemoryKind_Array;
+    case CUPTI_ACTIVITY_MEMORY_KIND_MANAGED:
+      return spark_rapids_jni::profiler::MemoryKind_Managed;
+    case CUPTI_ACTIVITY_MEMORY_KIND_DEVICE_STATIC:
+      return spark_rapids_jni::profiler::MemoryKind_DeviceStatic;
+    case CUPTI_ACTIVITY_MEMORY_KIND_MANAGED_STATIC:
+      return spark_rapids_jni::profiler::MemoryKind_ManagedStatic;
+    default:
+      std::cerr << "PROFILER: Unrecognized memory kind: " << k << std::endl;
+      return spark_rapids_jni::profiler::MemoryKind_Unknown;
+  }
+}
+
+spark_rapids_jni::profiler::MemsetFlags
+to_memset_flags(uint32_t flags)
+{
+  uint8_t result = 0;
+  if (flags & CUPTI_ACTIVITY_FLAG_MEMSET_ASYNC) {
+    result |= spark_rapids_jni::profiler::MemsetFlags_Async;
+  }
+  return static_cast<spark_rapids_jni::profiler::MemsetFlags>(result);
+}
+
+spark_rapids_jni::profiler::OverheadKind
+to_overhead_kind(CUpti_ActivityOverheadKind k)
+{
+  switch (k) {
+    case CUPTI_ACTIVITY_OVERHEAD_UNKNOWN:
+      return spark_rapids_jni::profiler::OverheadKind_Unknown;
+    case CUPTI_ACTIVITY_OVERHEAD_DRIVER_COMPILER:
+      return spark_rapids_jni::profiler::OverheadKind_DriverCompiler;
+    case CUPTI_ACTIVITY_OVERHEAD_CUPTI_BUFFER_FLUSH:
+      return spark_rapids_jni::profiler::OverheadKind_CUptiBufferFlush;
+    case CUPTI_ACTIVITY_OVERHEAD_CUPTI_INSTRUMENTATION:
+      return spark_rapids_jni::profiler::OverheadKind_CUptiInstrumentation;
+    case CUPTI_ACTIVITY_OVERHEAD_CUPTI_RESOURCE:
+      return spark_rapids_jni::profiler::OverheadKind_CUptiResource;
+    default:
+      std::cerr << "PROFILER: Unrecognized overhead kind: " << k << std::endl;
+      return spark_rapids_jni::profiler::OverheadKind_Unknown;
+  }
+}
+
+spark_rapids_jni::profiler::PartitionedGlobalCacheConfig
+to_partitioned_global_cache_config(CUpti_ActivityPartitionedGlobalCacheConfig c)
+{
+  switch (c) {
+    case CUPTI_ACTIVITY_PARTITIONED_GLOBAL_CACHE_CONFIG_UNKNOWN:
+      return spark_rapids_jni::profiler::PartitionedGlobalCacheConfig_Unknown;
+    case CUPTI_ACTIVITY_PARTITIONED_GLOBAL_CACHE_CONFIG_NOT_SUPPORTED:
+      return spark_rapids_jni::profiler::PartitionedGlobalCacheConfig_NotSupported;
+    case CUPTI_ACTIVITY_PARTITIONED_GLOBAL_CACHE_CONFIG_OFF:
+      return spark_rapids_jni::profiler::PartitionedGlobalCacheConfig_Off;
+    case CUPTI_ACTIVITY_PARTITIONED_GLOBAL_CACHE_CONFIG_ON:
+      return spark_rapids_jni::profiler::PartitionedGlobalCacheConfig_On;
+    default:
+      std::cerr << "PROFILER: Unrecognized partitioned global cache config: " << c << std::endl;
+      return spark_rapids_jni::profiler::PartitionedGlobalCacheConfig_Unknown;
+  }
+}
+
+spark_rapids_jni::profiler::ShmemLimitConfig
+to_shmem_limit_config(CUpti_FuncShmemLimitConfig c)
+{
+  switch (c) {
+    case CUPTI_FUNC_SHMEM_LIMIT_DEFAULT:
+      return spark_rapids_jni::profiler::ShmemLimitConfig_Default;
+    case CUPTI_FUNC_SHMEM_LIMIT_OPTIN:
+      return spark_rapids_jni::profiler::ShmemLimitConfig_Optin;
+    default:
+      std::cerr << "PROFILER: Unrecognized shmem limit config: " << c << std::endl;
+      return spark_rapids_jni::profiler::ShmemLimitConfig_Default;
+  }
+}
+
 flatbuffers::Offset<spark_rapids_jni::profiler::ActivityObjectId>
 add_object_id(flatbuffers::FlatBufferBuilder& fbb, CUpti_ActivityObjectKind kind,
               CUpti_ActivityObjectKindId const& object_id)
@@ -708,6 +870,62 @@ void emit_dropped_records(size_t num_dropped)
   write_current_fb();
 }
 
+void emit_kernel(CUpti_ActivityKernel8 const* r)
+{
+  auto& fbb = State->fb_builder;
+  auto name = fbb.CreateString(r->name);
+  spark_rapids_jni::profiler::KernelActivityBuilder kab(fbb);
+  kab.add_requested(r->cacheConfig.config.requested);
+  kab.add_executed(r->cacheConfig.config.executed);
+  kab.add_shared_memory_config(r->sharedMemoryConfig);
+  kab.add_registers_per_thread(r->registersPerThread);
+  kab.add_partitioned_global_cache_requested(
+    to_partitioned_global_cache_config(r->partitionedGlobalCacheRequested));
+  kab.add_partitioned_global_cache_executed(
+    to_partitioned_global_cache_config(r->partitionedGlobalCacheExecuted));
+  kab.add_start(r->start);
+  kab.add_end(r->end);
+  kab.add_completed(r->completed);
+  kab.add_device_id(r->deviceId);
+  kab.add_context_id(r->contextId);
+  kab.add_stream_id(r->streamId);
+  kab.add_grid_x(r->gridX);
+  kab.add_grid_y(r->gridY);
+  kab.add_grid_z(r->gridZ);
+  kab.add_block_x(r->blockX);
+  kab.add_block_y(r->blockY);
+  kab.add_block_z(r->blockZ);
+  kab.add_static_shared_memory(r->staticSharedMemory);
+  kab.add_dynamic_shared_memory(r->dynamicSharedMemory);
+  kab.add_local_memory_per_thread(r->localMemoryPerThread);
+  kab.add_local_memory_total(r->localMemoryTotal);
+  kab.add_correlation_id(r->correlationId);
+  kab.add_grid_id(r->gridId);
+  kab.add_name(name);
+  kab.add_queued(r->queued);
+  kab.add_submitted(r->submitted);
+  kab.add_launch_type(to_launch_type(r->launchType));
+  kab.add_is_shared_memory_carveout_requested(r->isSharedMemoryCarveoutRequested);
+  kab.add_shared_memory_carveout_requested(r->sharedMemoryCarveoutRequested);
+  kab.add_shared_memory_executed(r->sharedMemoryExecuted);
+  kab.add_graph_node_id(r->graphNodeId);
+  kab.add_shmem_limit_config(to_shmem_limit_config(r->shmemLimitConfig));
+  kab.add_graph_id(r->graphId);
+  kab.add_channel_id(r->channelID);
+  kab.add_channel_type(to_channel_type(r->channelType));
+  kab.add_cluster_x(r->clusterX);
+  kab.add_cluster_y(r->clusterY);
+  kab.add_cluster_z(r->clusterZ);
+  kab.add_cluster_scheduling_policy(r->clusterSchedulingPolicy);
+  kab.add_local_memory_total_v2(r->localMemoryTotal_v2);
+  auto kernel_fb = kab.Finish();
+  spark_rapids_jni::profiler::ActivityRecordBuilder arb(fbb);
+  arb.add_kernel(kernel_fb);
+  auto record = arb.Finish();
+  fbb.FinishSizePrefixed(record);
+  write_current_fb();
+}
+
 void emit_marker_activity(CUpti_ActivityMarker2 const* r)
 {
   auto& fbb = State->fb_builder;
@@ -752,6 +970,77 @@ void emit_marker_data(CUpti_ActivityMarkerData const* r)
   auto m = mdb.Finish();
   spark_rapids_jni::profiler::ActivityRecordBuilder arb(fbb);
   arb.add_marker_data(m);
+  auto record = arb.Finish();
+  fbb.FinishSizePrefixed(record);
+  write_current_fb();
+}
+
+void emit_memcpy(CUpti_ActivityMemcpy5 const* r)
+{
+  auto& fbb = State->fb_builder;
+  spark_rapids_jni::profiler::MemcpyActivityBuilder mab(fbb);
+  mab.add_copy_kind(to_memcpy_kind(r->copyKind));
+  mab.add_src_kind(to_memory_kind(r->srcKind));
+  mab.add_dst_kind(to_memory_kind(r->dstKind));
+  mab.add_flags(to_memcpy_flags(r->flags));
+  mab.add_bytes(r->bytes);
+  mab.add_start(r->start);
+  mab.add_end(r->end);
+  mab.add_device_id(r->deviceId);
+  mab.add_context_id(r->contextId);
+  mab.add_stream_id(r->streamId);
+  mab.add_correlation_id(r->correlationId);
+  mab.add_runtime_correlation_id(r->runtimeCorrelationId);
+  mab.add_graph_node_id(r->graphNodeId);
+  mab.add_graph_id(r->graphId);
+  mab.add_channel_id(r->channelID);
+  mab.add_channel_type(to_channel_type(r->channelType));
+  auto m = mab.Finish();
+  spark_rapids_jni::profiler::ActivityRecordBuilder arb(fbb);
+  arb.add_memcpy(m);
+  auto record = arb.Finish();
+  fbb.FinishSizePrefixed(record);
+  write_current_fb();
+}
+
+void emit_memset(CUpti_ActivityMemset4 const* r)
+{
+  auto& fbb = State->fb_builder;
+  spark_rapids_jni::profiler::MemsetActivityBuilder mab(fbb);
+  mab.add_value(r->value);
+  mab.add_bytes(r->bytes);
+  mab.add_start(r->start);
+  mab.add_end(r->end);
+  mab.add_device_id(r->deviceId);
+  mab.add_context_id(r->contextId);
+  mab.add_stream_id(r->streamId);
+  mab.add_correlation_id(r->correlationId);
+  mab.add_flags(to_memset_flags(r->flags));
+  mab.add_memory_kind(to_memory_kind(r->memoryKind));
+  mab.add_graph_node_id(r->graphNodeId);
+  mab.add_graph_id(r->graphId);
+  mab.add_channel_id(r->channelID);
+  mab.add_channel_type(to_channel_type(r->channelType));
+  auto m = mab.Finish();
+  spark_rapids_jni::profiler::ActivityRecordBuilder arb(fbb);
+  arb.add_memset(m);
+  auto record = arb.Finish();
+  fbb.FinishSizePrefixed(record);
+  write_current_fb();
+}
+
+void emit_overhead(CUpti_ActivityOverhead const* r)
+{
+  auto& fbb = State->fb_builder;
+  auto object_id = add_object_id(fbb, r->objectKind, r->objectId);
+  spark_rapids_jni::profiler::OverheadActivityBuilder oab(fbb);
+  oab.add_overhead_kind(to_overhead_kind(r->overheadKind));
+  oab.add_object_id(object_id);
+  oab.add_start(r->start);
+  oab.add_end(r->end);
+  auto o = oab.Finish();
+  spark_rapids_jni::profiler::ActivityRecordBuilder arb(fbb);
+  arb.add_overhead(o);
   auto record = arb.Finish();
   fbb.FinishSizePrefixed(record);
   write_current_fb();
@@ -812,6 +1101,30 @@ void process_buffer(uint8_t* buffer, size_t valid_size)
         {
           auto marker = reinterpret_cast<CUpti_ActivityMarkerData const*>(record_ptr);
           emit_marker_data(marker);
+          break;
+        }
+        case CUPTI_ACTIVITY_KIND_MEMCPY:
+        {
+          auto r = reinterpret_cast<CUpti_ActivityMemcpy5 const*>(record_ptr);
+          emit_memcpy(r);
+          break;
+        }
+        case CUPTI_ACTIVITY_KIND_MEMSET:
+        {
+          auto r = reinterpret_cast<CUpti_ActivityMemset4 const*>(record_ptr);
+          emit_memset(r);
+          break;
+        }
+        case CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL:
+        {
+          auto r = reinterpret_cast<CUpti_ActivityKernel8 const*>(record_ptr);
+          emit_kernel(r);
+          break;
+        }
+        case CUPTI_ACTIVITY_KIND_OVERHEAD:
+        {
+          auto r = reinterpret_cast<CUpti_ActivityOverhead const*>(record_ptr);
+          emit_overhead(r);
           break;
         }
         default:
@@ -878,7 +1191,7 @@ JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeInit(JNIE
 
     //check_cupti(cuptiEnableDomain(1, State->subscriber_handle, CUPTI_CB_DOMAIN_NVTX), "Error enabling NVTX domain");
     check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_DEVICE), "Error enabling device activity");
-    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONTEXT), "Error enabling context activity");
+    //check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONTEXT), "Error enabling context activity");
     check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_DRIVER), "Error enabling driver activity");
     check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_RUNTIME), "Error enabling runtime activity");
     check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY), "Error enabling memcpy activity");
