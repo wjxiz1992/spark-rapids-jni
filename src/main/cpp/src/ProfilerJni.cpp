@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <thread>
+#include <vector>
 
 // HACK - FIXME
 #define JNI_EXCEPTION_OCCURRED_CHECK(env, ret_val)                                                 \
@@ -61,6 +62,14 @@ constexpr size_t ALIGN_BYTES = 8;
 constexpr size_t BUFF_SIZE = 8 * 1024 * 1024;
 constexpr char const* DATA_WRITER_CLASS = "com/nvidia/spark/rapids/jni/Profiler$DataWriter";
 constexpr uint32_t PROFILE_VERSION = 1;
+
+// TODO: Make this configurable
+// Byte size threshold for flushing the flatbuffer builder
+constexpr size_t FLATBUF_BUILDER_FLUSH_SIZE = 1 * 1024 * 1024;
+// Add 10% to try to avoid an expensive resize when we complete the flatbuffer once reaching the target size
+constexpr size_t FLATBUF_BUILDER_INIT_SIZE = static_cast<size_t>(FLATBUF_BUILDER_FLUSH_SIZE * 1.1);
+
+// TODO: Timer-based flushing
 
 JavaVM* get_jvm(JNIEnv* env)
 {
@@ -197,17 +206,25 @@ struct subscriber_state {
   JNIEnv* writer_env;
   CUpti_SubscriberHandle subscriber_handle;
   bool has_cupti_callback_errored;
+  // TODO: Move serializer to its own class and file
   jobject j_writer;
   flatbuffers::FlatBufferBuilder fb_builder;
-  profile_buffer fb_data;
+  std::vector<flatbuffers::Offset<spark_rapids_jni::profiler::ApiActivity>> api_offsets;
+  std::vector<flatbuffers::Offset<spark_rapids_jni::profiler::DeviceActivity>> device_offsets;
+  std::vector<flatbuffers::Offset<spark_rapids_jni::profiler::DroppedRecords>> dropped_offsets;
+  std::vector<flatbuffers::Offset<spark_rapids_jni::profiler::KernelActivity>> kernel_offsets;
+  std::vector<flatbuffers::Offset<spark_rapids_jni::profiler::MarkerActivity>> marker_offsets;
+  std::vector<flatbuffers::Offset<spark_rapids_jni::profiler::MarkerData>> marker_data_offsets;
+  std::vector<flatbuffers::Offset<spark_rapids_jni::profiler::MemcpyActivity>> memcpy_offsets;
+  std::vector<flatbuffers::Offset<spark_rapids_jni::profiler::MemsetActivity>> memset_offsets;
+  std::vector<flatbuffers::Offset<spark_rapids_jni::profiler::OverheadActivity>> overhead_offsets;
   std::thread writer_thread;
   free_buffer_tracker free_buffers;
   completed_buffer_queue completed_buffers;
 
   subscriber_state(JNIEnv* env, jobject writer)
-    : writer_env(nullptr), j_writer(nullptr), has_cupti_callback_errored(false), fb_builder(8 * 1024)
-  {
-  }
+    : writer_env(nullptr), j_writer(nullptr), has_cupti_callback_errored(false),
+      fb_builder(FLATBUF_BUILDER_INIT_SIZE) {}
 };
 
 
@@ -531,40 +548,102 @@ void setup_nvtx_env(JNIEnv* env, jstring j_lib_path)
   env->ReleaseStringUTFChars(j_lib_path, lib_path);
 }
 
-// TODO: This should be a state method
-void flush_fb()
+void clear_fbb()
 {
-  if (State->fb_data.valid_size() > 0) {
-    JNIEnv* env = State->writer_env;
-    std::cerr << "PROFILER: FLUSHING BYTEBUFFER TO WRITER" << std::endl;
-    std::cerr << "ALLOCATING NEW DIRECT BYTE BUFFER for buffer at " << static_cast<void*>(State->fb_data.data()) << " SIZE=" << State->fb_data.valid_size() << std::endl;
-    auto bytebuf_obj = env->NewDirectByteBuffer(State->fb_data.data(), State->fb_data.valid_size());
-    if (bytebuf_obj != nullptr) {
-      std::cerr << "CALLING WRITE METHOD" << std::endl;
-      env->CallVoidMethod(State->j_writer, Data_writer_write_method, bytebuf_obj);
-    } else {
-      std::cerr << "PROFILER: ERROR CREATING BYTEBUFFER FOR WRITER" << std::endl;
-    }
-    State->fb_data.set_valid_size(0);
-  }
+  State->fb_builder.Clear();
+  State->api_offsets.clear();
+  State->device_offsets.clear();
+  State->dropped_offsets.clear();
+  State->kernel_offsets.clear();
+  State->marker_offsets.clear();
+  State->marker_data_offsets.clear();
+  State->memcpy_offsets.clear();
+  State->memset_offsets.clear();
+  State->overhead_offsets.clear();
 }
 
 // TODO: This should be a state method
 void write_current_fb()
 {
   auto fb_size = State->fb_builder.GetSize();
-  if (fb_size > State->fb_data.size()) {
-    std::cerr << "PROFILER: DROPPING OVERSIZED RECORD OF SIZE=" << fb_size
-      << " BUFFER SIZE=" << State->fb_data.size() << std::endl;
-  } else {
+  if (fb_size > 0) {
+    std::cerr << "PROFILER: sending " << fb_size << " bytes to writer" << std::endl;
     auto fb = State->fb_builder.GetBufferPointer();
-    if (State->fb_data.valid_size() + fb_size > State->fb_data.size()) {
-      flush_fb();
+    auto env = State->writer_env;
+    auto bytebuf_obj = env->NewDirectByteBuffer(fb, fb_size);
+    if (bytebuf_obj != nullptr) {
+      env->CallVoidMethod(State->j_writer, Data_writer_write_method, bytebuf_obj);
+    } else {
+      std::cerr << "PROFILER: ERROR: Unable to create ByteBuffer for writer" << std::endl;
     }
-    std::memcpy(State->fb_data.data() + State->fb_data.valid_size(), fb, fb_size);
-    State->fb_data.set_valid_size(State->fb_data.valid_size() + fb_size);
   }
-  State->fb_builder.Clear();
+  clear_fbb();
+}
+
+// TODO: This should be a state method
+void flush_activity_records()
+{
+  auto& fbb = State->fb_builder;
+  if (fbb.GetSize() > 0) {
+    using flatbuffers::Offset;
+    using flatbuffers::Vector;
+    Offset<Vector<Offset<spark_rapids_jni::profiler::ApiActivity>>> api_vec;
+    Offset<Vector<Offset<spark_rapids_jni::profiler::DeviceActivity>>> device_vec;
+    Offset<Vector<Offset<spark_rapids_jni::profiler::DroppedRecords>>> dropped_vec;
+    Offset<Vector<Offset<spark_rapids_jni::profiler::KernelActivity>>> kernel_vec;
+    Offset<Vector<Offset<spark_rapids_jni::profiler::MarkerActivity>>> marker_vec;
+    Offset<Vector<Offset<spark_rapids_jni::profiler::MarkerData>>> marker_data_vec;
+    Offset<Vector<Offset<spark_rapids_jni::profiler::MemcpyActivity>>> memcpy_vec;
+    Offset<Vector<Offset<spark_rapids_jni::profiler::MemsetActivity>>> memset_vec;
+    Offset<Vector<Offset<spark_rapids_jni::profiler::OverheadActivity>>> overhead_vec;
+    if (State->api_offsets.size() > 0) {
+      api_vec = fbb.CreateVector(State->api_offsets);
+    }
+    if (State->device_offsets.size() > 0) {
+      device_vec = fbb.CreateVector(State->device_offsets);
+    }
+    if (State->dropped_offsets.size() > 0) {
+      dropped_vec = fbb.CreateVector(State->dropped_offsets);
+    }
+    if (State->kernel_offsets.size() > 0) {
+      kernel_vec = fbb.CreateVector(State->kernel_offsets);
+    }
+    if (State->marker_offsets.size() > 0) {
+      marker_vec = fbb.CreateVector(State->marker_offsets);
+    }
+    if (State->marker_data_offsets.size() > 0) {
+      marker_data_vec = fbb.CreateVector(State->marker_data_offsets);
+    }
+    if (State->memcpy_offsets.size() > 0) {
+      memcpy_vec = fbb.CreateVector(State->memcpy_offsets);
+    }
+    if (State->memset_offsets.size() > 0) {
+      memset_vec = fbb.CreateVector(State->memset_offsets);
+    }
+    if (State->overhead_offsets.size() > 0) {
+      overhead_vec = fbb.CreateVector(State->overhead_offsets);
+    }
+    spark_rapids_jni::profiler::ActivityRecordsBuilder arb(fbb);
+    arb.add_api(api_vec);
+    arb.add_device(device_vec);
+    arb.add_dropped(dropped_vec);
+    arb.add_kernel(kernel_vec);
+    arb.add_marker(marker_vec);
+    arb.add_marker_data(marker_data_vec);
+    arb.add_memcpy(memcpy_vec);
+    arb.add_memset(memset_vec);
+    arb.add_overhead(overhead_vec);
+    auto r = arb.Finish();
+    fbb.FinishSizePrefixed(r);
+    write_current_fb();
+  }
+}
+
+void maybe_flush_activity_records()
+{
+  if (State->fb_builder.GetSize() >= FLATBUF_BUILDER_FLUSH_SIZE) {
+    flush_activity_records();
+  }
 }
 
 spark_rapids_jni::profiler::MarkerFlags marker_flags_to_fb(CUpti_ActivityFlag flags)
@@ -786,13 +865,12 @@ add_object_id(flatbuffers::FlatBufferBuilder& fbb, CUpti_ActivityObjectKind kind
       return aoib.Finish();
     }
     default:
-      std::cerr << "PROFILER: IGNORING RECORD WITH ACTIVITY OBJECT KIND " << kind << std::endl;
-      break;
+      std::cerr << "PROFILER: Unrecognized object kind: " << kind << std::endl;
+      return flatbuffers::Offset<spark_rapids_jni::profiler::ActivityObjectId>();
   }
-  return flatbuffers::Offset<spark_rapids_jni::profiler::ActivityObjectId>();
 }
 
-void emit_api_activity(CUpti_ActivityAPI const* r)
+void process_api_activity(CUpti_ActivityAPI const* r)
 {
   auto api_kind = spark_rapids_jni::profiler::ApiKind_Runtime;
   if (r->kind == CUPTI_ACTIVITY_KIND_DRIVER) {
@@ -801,8 +879,7 @@ void emit_api_activity(CUpti_ActivityAPI const* r)
     std::cerr << "PROFILER: IGNORING API ACTIVITY RECORD KIND=" << activity_kind_to_string(r->kind) << std::endl;
     return;
   }
-  auto& fbb = State->fb_builder;
-  spark_rapids_jni::profiler::ApiActivityBuilder aab(fbb);
+  spark_rapids_jni::profiler::ApiActivityBuilder aab(State->fb_builder);
   aab.add_kind(api_kind);
   aab.add_cbid(r->cbid);
   aab.add_start(r->start);
@@ -811,18 +888,13 @@ void emit_api_activity(CUpti_ActivityAPI const* r)
   aab.add_thread_id(r->threadId);
   aab.add_correlation_id(r->correlationId);
   aab.add_return_value(r->returnValue);
-  auto api_fb = aab.Finish();
-  spark_rapids_jni::profiler::ActivityRecordBuilder arb(fbb);
-  arb.add_api(api_fb);
-  auto record = arb.Finish();
-  fbb.FinishSizePrefixed(record);
-  write_current_fb();
+  State->api_offsets.push_back(aab.Finish());
 }
 
-void emit_device_activity(CUpti_ActivityDevice4 const* r)
+void process_device_activity(CUpti_ActivityDevice4 const* r)
 {
   auto& fbb = State->fb_builder;
-  auto name = fbb.CreateString(r->name);
+  auto name = fbb.CreateSharedString(r->name);
   spark_rapids_jni::profiler::DeviceActivityBuilder dab(fbb);
   dab.add_global_memory_bandwidth(r->globalMemoryBandwidth);
   dab.add_global_memory_size(r->globalMemorySize);
@@ -851,29 +923,19 @@ void emit_device_activity(CUpti_ActivityDevice4 const* r)
   dab.add_id(r->id);
   dab.add_ecc_enabled(r->eccEnabled);
   dab.add_name(name);
-  auto device_fb = dab.Finish();
-  spark_rapids_jni::profiler::ActivityRecordBuilder arb(fbb);
-  arb.add_device(device_fb);
-  auto record = arb.Finish();
-  fbb.FinishSizePrefixed(record);
-  write_current_fb();
+  State->device_offsets.push_back(dab.Finish());
 }
 
-void emit_dropped_records(size_t num_dropped)
+void process_dropped_records(size_t num_dropped)
 {
-  auto& fbb = State->fb_builder;
-  auto dropped_fb = spark_rapids_jni::profiler::CreateDroppedRecords(fbb, num_dropped);
-  spark_rapids_jni::profiler::ActivityRecordBuilder arb(fbb);
-  arb.add_dropped(dropped_fb);
-  auto record = arb.Finish();
-  fbb.FinishSizePrefixed(record);
-  write_current_fb();
+  auto dropped = spark_rapids_jni::profiler::CreateDroppedRecords(State->fb_builder, num_dropped);
+  State->dropped_offsets.push_back(dropped);
 }
 
-void emit_kernel(CUpti_ActivityKernel8 const* r)
+void process_kernel(CUpti_ActivityKernel8 const* r)
 {
   auto& fbb = State->fb_builder;
-  auto name = fbb.CreateString(r->name);
+  auto name = fbb.CreateSharedString(r->name);
   spark_rapids_jni::profiler::KernelActivityBuilder kab(fbb);
   kab.add_requested(r->cacheConfig.config.requested);
   kab.add_executed(r->cacheConfig.config.executed);
@@ -918,31 +980,22 @@ void emit_kernel(CUpti_ActivityKernel8 const* r)
   kab.add_cluster_z(r->clusterZ);
   kab.add_cluster_scheduling_policy(r->clusterSchedulingPolicy);
   kab.add_local_memory_total_v2(r->localMemoryTotal_v2);
-  auto kernel_fb = kab.Finish();
-  spark_rapids_jni::profiler::ActivityRecordBuilder arb(fbb);
-  arb.add_kernel(kernel_fb);
-  auto record = arb.Finish();
-  fbb.FinishSizePrefixed(record);
-  write_current_fb();
+  State->kernel_offsets.push_back(kab.Finish());
 }
 
-void emit_marker_activity(CUpti_ActivityMarker2 const* r)
+void process_marker_activity(CUpti_ActivityMarker2 const* r)
 {
   auto& fbb = State->fb_builder;
   auto object_id = add_object_id(fbb, r->objectKind, r->objectId);
-  if (object_id.IsNull()) {
-    fbb.Clear();
-    return;
-  }
   auto has_name = r->name != nullptr;
   auto has_domain = r->name != nullptr;
   flatbuffers::Offset<flatbuffers::String> name;
   flatbuffers::Offset<flatbuffers::String> domain;
   if (has_name) {
-    name = fbb.CreateString(r->name);
+    name = fbb.CreateSharedString(r->name);
   }
   if (has_domain) {
-    domain = fbb.CreateString(r->domain);
+    domain = fbb.CreateSharedString(r->domain);
   }
   spark_rapids_jni::profiler::MarkerActivityBuilder mab(fbb);
   mab.add_flags(marker_flags_to_fb(r->flags));
@@ -951,34 +1004,22 @@ void emit_marker_activity(CUpti_ActivityMarker2 const* r)
   mab.add_object_id(object_id);
   mab.add_name(name);
   mab.add_domain(domain);
-  auto m = mab.Finish();
-  spark_rapids_jni::profiler::ActivityRecordBuilder arb(fbb);
-  arb.add_marker(m);
-  auto record = arb.Finish();
-  fbb.FinishSizePrefixed(record);
-  write_current_fb();
+  State->marker_offsets.push_back(mab.Finish());
 }
 
-void emit_marker_data(CUpti_ActivityMarkerData const* r)
+void process_marker_data(CUpti_ActivityMarkerData const* r)
 {
-  auto& fbb = State->fb_builder;
-  spark_rapids_jni::profiler::MarkerDataBuilder mdb(fbb);
+  spark_rapids_jni::profiler::MarkerDataBuilder mdb(State->fb_builder);
   mdb.add_flags(marker_flags_to_fb(r->flags));
   mdb.add_id(r->id);
   mdb.add_color(r->color);
   mdb.add_category(r->category);
-  auto m = mdb.Finish();
-  spark_rapids_jni::profiler::ActivityRecordBuilder arb(fbb);
-  arb.add_marker_data(m);
-  auto record = arb.Finish();
-  fbb.FinishSizePrefixed(record);
-  write_current_fb();
+  State->marker_data_offsets.push_back(mdb.Finish());
 }
 
-void emit_memcpy(CUpti_ActivityMemcpy5 const* r)
+void process_memcpy(CUpti_ActivityMemcpy5 const* r)
 {
-  auto& fbb = State->fb_builder;
-  spark_rapids_jni::profiler::MemcpyActivityBuilder mab(fbb);
+  spark_rapids_jni::profiler::MemcpyActivityBuilder mab(State->fb_builder);
   mab.add_copy_kind(to_memcpy_kind(r->copyKind));
   mab.add_src_kind(to_memory_kind(r->srcKind));
   mab.add_dst_kind(to_memory_kind(r->dstKind));
@@ -995,18 +1036,12 @@ void emit_memcpy(CUpti_ActivityMemcpy5 const* r)
   mab.add_graph_id(r->graphId);
   mab.add_channel_id(r->channelID);
   mab.add_channel_type(to_channel_type(r->channelType));
-  auto m = mab.Finish();
-  spark_rapids_jni::profiler::ActivityRecordBuilder arb(fbb);
-  arb.add_memcpy(m);
-  auto record = arb.Finish();
-  fbb.FinishSizePrefixed(record);
-  write_current_fb();
+  State->memcpy_offsets.push_back(mab.Finish());
 }
 
-void emit_memset(CUpti_ActivityMemset4 const* r)
+void process_memset(CUpti_ActivityMemset4 const* r)
 {
-  auto& fbb = State->fb_builder;
-  spark_rapids_jni::profiler::MemsetActivityBuilder mab(fbb);
+  spark_rapids_jni::profiler::MemsetActivityBuilder mab(State->fb_builder);
   mab.add_value(r->value);
   mab.add_bytes(r->bytes);
   mab.add_start(r->start);
@@ -1021,15 +1056,10 @@ void emit_memset(CUpti_ActivityMemset4 const* r)
   mab.add_graph_id(r->graphId);
   mab.add_channel_id(r->channelID);
   mab.add_channel_type(to_channel_type(r->channelType));
-  auto m = mab.Finish();
-  spark_rapids_jni::profiler::ActivityRecordBuilder arb(fbb);
-  arb.add_memset(m);
-  auto record = arb.Finish();
-  fbb.FinishSizePrefixed(record);
-  write_current_fb();
+  State->memset_offsets.push_back(mab.Finish());
 }
 
-void emit_overhead(CUpti_ActivityOverhead const* r)
+void process_overhead(CUpti_ActivityOverhead const* r)
 {
   auto& fbb = State->fb_builder;
   auto object_id = add_object_id(fbb, r->objectKind, r->objectId);
@@ -1038,18 +1068,13 @@ void emit_overhead(CUpti_ActivityOverhead const* r)
   oab.add_object_id(object_id);
   oab.add_start(r->start);
   oab.add_end(r->end);
-  auto o = oab.Finish();
-  spark_rapids_jni::profiler::ActivityRecordBuilder arb(fbb);
-  arb.add_overhead(o);
-  auto record = arb.Finish();
-  fbb.FinishSizePrefixed(record);
-  write_current_fb();
+  State->overhead_offsets.push_back(oab.Finish());
 }
 
-void emit_profile_header()
+void write_profile_header()
 {
   auto& fbb = State->fb_builder;
-  auto magic = fbb.CreateString("spark-rapids Profile");
+  auto magic = fbb.CreateString("spark-rapids profile");
   // TODO: This needs to be passed in by Java during init
   auto writer_version = fbb.CreateString("24.06.0");
   auto header = spark_rapids_jni::profiler::CreateProfileHeader(fbb, magic, PROFILE_VERSION, writer_version);
@@ -1062,11 +1087,11 @@ void report_num_dropped_records()
   size_t num_dropped = 0;
   auto rc = cuptiActivityGetNumDroppedRecords(NULL, 0, &num_dropped);
   if (rc == CUPTI_SUCCESS && num_dropped > 0) {
-    emit_dropped_records(num_dropped);
+    process_dropped_records(num_dropped);
   }
 }
 
-void process_buffer(uint8_t* buffer, size_t valid_size)
+void process_cupti_buffer(uint8_t* buffer, size_t valid_size)
 {
 #if 1
   print_buffer(buffer, valid_size);
@@ -1081,56 +1106,57 @@ void process_buffer(uint8_t* buffer, size_t valid_size)
         case CUPTI_ACTIVITY_KIND_DEVICE:
         {
           auto device_record = reinterpret_cast<CUpti_ActivityDevice4 const*>(record_ptr);
-          emit_device_activity(device_record);
+          process_device_activity(device_record);
           break;
         }
         case CUPTI_ACTIVITY_KIND_DRIVER:
         case CUPTI_ACTIVITY_KIND_RUNTIME:
         {
           auto api_record = reinterpret_cast<CUpti_ActivityAPI const*>(record_ptr);
-          emit_api_activity(api_record);
+          process_api_activity(api_record);
           break;
         }
         case CUPTI_ACTIVITY_KIND_MARKER:
         {
           auto marker = reinterpret_cast<CUpti_ActivityMarker2 const*>(record_ptr);
-          emit_marker_activity(marker);
+          process_marker_activity(marker);
           break;
         }
         case CUPTI_ACTIVITY_KIND_MARKER_DATA:
         {
           auto marker = reinterpret_cast<CUpti_ActivityMarkerData const*>(record_ptr);
-          emit_marker_data(marker);
+          process_marker_data(marker);
           break;
         }
         case CUPTI_ACTIVITY_KIND_MEMCPY:
         {
           auto r = reinterpret_cast<CUpti_ActivityMemcpy5 const*>(record_ptr);
-          emit_memcpy(r);
+          process_memcpy(r);
           break;
         }
         case CUPTI_ACTIVITY_KIND_MEMSET:
         {
           auto r = reinterpret_cast<CUpti_ActivityMemset4 const*>(record_ptr);
-          emit_memset(r);
+          process_memset(r);
           break;
         }
         case CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL:
         {
           auto r = reinterpret_cast<CUpti_ActivityKernel8 const*>(record_ptr);
-          emit_kernel(r);
+          process_kernel(r);
           break;
         }
         case CUPTI_ACTIVITY_KIND_OVERHEAD:
         {
           auto r = reinterpret_cast<CUpti_ActivityOverhead const*>(record_ptr);
-          emit_overhead(r);
+          process_overhead(r);
           break;
         }
         default:
           std::cerr << "IGNORING ACTIVITY RECORD " << activity_kind_to_string(record_ptr->kind) << std::endl;
           break;
       }
+      maybe_flush_activity_records();
       rc = cuptiActivityGetNextRecord(buffer, valid_size, &record_ptr);
     }
   }
@@ -1141,13 +1167,15 @@ void writer_thread_process(JavaVM* vm)
   std::cerr << "PROFILER: WRITER THREAD START" << std::endl;
   State->writer_env = attach_to_jvm(vm);
   std::cerr << "WRITER THREAD JVM ATTACHED" << std::endl;
+  std::cerr << "EMITTING HEADER" << std::endl;
+  write_profile_header();
   auto buffer = State->completed_buffers.get();
   while (buffer) {
-    process_buffer(buffer->data(), buffer->valid_size());
+    process_cupti_buffer(buffer->data(), buffer->valid_size());
     State->free_buffers.put(std::move(buffer));
     buffer = State->completed_buffers.get();
   }
-  flush_fb();
+  flush_activity_records();
   std::cerr << "WRITER THREAD DETACHING" << std::endl;
   vm->DetachCurrentThread();
   std::cerr << "PROFILER: WRITER THREAD COMPLETED" << std::endl;
@@ -1170,8 +1198,6 @@ JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeInit(JNIE
       throw std::runtime_error("Unable to create a global reference to writer");
     }
     State->writer_thread = std::thread(writer_thread_process, get_jvm(env));
-    std::cerr << "EMITTING HEADER" << std::endl;
-    emit_profile_header();
     auto rc = cuptiSubscribe(&State->subscriber_handle, callback_handler, nullptr);
     check_cupti(rc, "Error initializing CUPTI");
     rc = cuptiEnableCallback(1, State->subscriber_handle, CUPTI_CB_DOMAIN_RUNTIME_API,
