@@ -116,16 +116,16 @@ table ProfileHeader {
   writer_version:string;
 }
 
-table ActivityRecord {
-  api:ApiActivity;
-  device:DeviceActivity;
-  dropped:DroppedRecords;
-  kernel:KernelActivity;
-  marker:MarkerActivity;
-  marker_data:MarkerData;
-  memcpy:MemcpyActivity;
-  memset:MemsetActivity;
-  overhead:OverheadActivity;
+table ActivityRecords {
+  api:[ApiActivity];
+  device:[DeviceActivity];
+  dropped:[DroppedRecords];
+  kernel:[KernelActivity];
+  marker:[MarkerActivity];
+  marker_data:[MarkerData];
+  memcpy:[MemcpyActivity];
+  memset:[MemsetActivity];
+  overhead:[OverheadActivity];
 }
 
 table ApiActivity {
