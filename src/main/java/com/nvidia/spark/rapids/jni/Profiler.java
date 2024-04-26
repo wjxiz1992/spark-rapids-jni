@@ -25,9 +25,15 @@ import java.nio.ByteBuffer;
 
 public class Profiler {
   private static final Logger LOG = LoggerFactory.getLogger(Profiler.class);
+  private static final long DEFAULT_WRITE_BUFFER_SIZE = 1024 * 1024;
+  private static final int DEFAULT_FLUSH_PERIOD_MILLIS = 0;
   private static DataWriter writer = null;
 
   public static void init(DataWriter w) {
+    init(w, DEFAULT_WRITE_BUFFER_SIZE, DEFAULT_FLUSH_PERIOD_MILLIS);
+  }
+
+  public static void init(DataWriter w, long writeBufferSize, int flushPeriodMillis) {
     if (writer == null) {
       File libPath;
       try {
@@ -35,7 +41,7 @@ public class Profiler {
       } catch (IOException e) {
         throw new RuntimeException("Error loading profiler library", e);
       }
-      nativeInit(libPath.getAbsolutePath(), w);
+      nativeInit(libPath.getAbsolutePath(), w, writeBufferSize, flushPeriodMillis);
       writer = w;
     } else {
       throw new IllegalStateException("Already initialized");
@@ -55,7 +61,8 @@ public class Profiler {
     }
   }
 
-  private static native void nativeInit(String libPath, DataWriter writer);
+  private static native void nativeInit(String libPath, DataWriter writer,
+                                        long writeBufferSize, int flushPeriodMillis);
 
   private static native void nativeShutdown();
 

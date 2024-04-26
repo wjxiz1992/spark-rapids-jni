@@ -58,8 +58,6 @@
 
 namespace {
 
-constexpr size_t ALIGN_BYTES = 8;
-constexpr size_t BUFF_SIZE = 8 * 1024 * 1024;
 constexpr char const* DATA_WRITER_CLASS = "com/nvidia/spark/rapids/jni/Profiler$DataWriter";
 constexpr uint32_t PROFILE_VERSION = 1;
 
@@ -96,7 +94,7 @@ JNIEnv* attach_to_jvm(JavaVM* vm)
 }
 
 struct profile_buffer {
-  profile_buffer() : _size(BUFF_SIZE), _valid_size(0) {
+  profile_buffer() : _size(PROFILE_BUFF_SIZE), _valid_size(0) {
     auto err = posix_memalign(reinterpret_cast<void**>(&_data), ALIGN_BYTES, _size);
     if (err != 0) {
       std::cerr << "PROFILER: FAILED TO ALLOCATE CUPTI BUFFER: " << strerror(err) << std::endl;
@@ -107,7 +105,7 @@ struct profile_buffer {
   }
 
   profile_buffer(uint8_t* data, size_t valid_size)
-   : _data(data), _size(valid_size ? BUFF_SIZE : 0), _valid_size(_valid_size) {}
+   : _data(data), _size(valid_size ? PROFILE_BUFF_SIZE : 0), _valid_size(_valid_size) {}
 
   void release(uint8_t** data_ptr_ptr, size_t* size_ptr) {
     std::cerr << "PROFILER: RELEASING BUFFER at " << static_cast<void*>(_data) << " SIZE=" << _size << std::endl;
@@ -131,6 +129,8 @@ struct profile_buffer {
   void set_valid_size(size_t size) { _valid_size = size; }
 
 private:
+  static constexpr size_t ALIGN_BYTES = 8;
+  static constexpr size_t PROFILE_BUFF_SIZE = 8 * 1024 * 1024;
   uint8_t* _data;
   size_t _size;
   size_t _valid_size;
@@ -222,9 +222,9 @@ struct subscriber_state {
   free_buffer_tracker free_buffers;
   completed_buffer_queue completed_buffers;
 
-  subscriber_state(JNIEnv* env, jobject writer)
+  subscriber_state(JNIEnv* env, jobject writer, size_t fb_builder_init_size)
     : writer_env(nullptr), j_writer(nullptr), has_cupti_callback_errored(false),
-      fb_builder(FLATBUF_BUILDER_INIT_SIZE) {}
+      fb_builder(fb_builder_init_size) {}
 };
 
 
@@ -1186,12 +1186,14 @@ void writer_thread_process(JavaVM* vm)
 extern "C" {
 
 JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeInit(JNIEnv* env, jclass,
-    jstring j_lib_path, jobject j_writer)
+    jstring j_lib_path, jobject j_writer, jlong write_buffer_size, jint flush_period_millis)
 {
   try {
     cache_writer_callback_method(env);
     setup_nvtx_env(env, j_lib_path);
-    State = new subscriber_state(env, j_writer);
+    // scale up the buffer size by 15% to avoid an expensive resize when finishing the record
+    auto fb_builder_init_size = static_cast<size_t>(write_buffer_size * 1.15);
+    State = new subscriber_state(env, j_writer, write_buffer_size);
     // grab a global reference to the writer instance so it isn't garbage collected
     State->j_writer = static_cast<jobject>(env->NewGlobalRef(j_writer));
     if (State->j_writer == nullptr) {
@@ -1226,6 +1228,11 @@ JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeInit(JNIE
     check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MARKER), "Error enabling marker activity");
     check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL), "Error enabling concurrent kernel activity");
     check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_OVERHEAD), "Error enabling overhead activity");
+
+    if (flush_period_millis > 0) {
+      std::cerr << "PROFILER: Flushing activity records every " << flush_period_millis << " milliseconds" << std::endl;
+      check_cupti(cuptiActivityFlushPeriod(flush_period_millis), "Error requesting periodic activity flush");
+    }
   }
   CATCH_STD(env, );
 }
