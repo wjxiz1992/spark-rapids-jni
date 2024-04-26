@@ -88,105 +88,104 @@ JNIEnv* attach_to_jvm(JavaVM* vm)
 }
 
 struct profile_buffer {
-  explicit profile_buffer(size_t size) : _size(size), _valid_size(0) {
-    auto err = posix_memalign(reinterpret_cast<void**>(&_data), ALIGN_BYTES, _size);
+  explicit profile_buffer(size_t size) : size_(size), valid_size_(0) {
+    auto err = posix_memalign(reinterpret_cast<void**>(&data_), ALIGN_BYTES, size_);
     if (err != 0) {
       std::cerr << "PROFILER: FAILED TO ALLOCATE CUPTI BUFFER: " << strerror(err) << std::endl;
-      _data = nullptr;
-      _size = 0;
+      data_ = nullptr;
+      size_ = 0;
     }
-    std::cerr << "PROFILER: ALLOCATED BUFFER at " << static_cast<void*>(_data) << " SIZE=" << _size << std::endl;
+    std::cerr << "PROFILER: ALLOCATED BUFFER at " << static_cast<void*>(data_) << " SIZE=" << size_ << std::endl;
   }
 
   profile_buffer(uint8_t* data, size_t size, size_t valid_size)
-   : _data(data), _size(size), _valid_size(_valid_size) {
-    std::cerr << "PROFILER: ACQUIRING BUFFER at " << static_cast<void*>(_data)
-      << " SIZE=" << _size
-      << " VALID=" << _valid_size << std::endl;
+   : data_(data), size_(size), valid_size_(valid_size) {
+    std::cerr << "PROFILER: ACQUIRING BUFFER at " << static_cast<void*>(data_)
+      << " SIZE=" << size_
+      << " VALID=" << valid_size_ << std::endl;
   }
 
   void release(uint8_t** data_ptr_ptr, size_t* size_ptr) {
-    std::cerr << "PROFILER: RELEASING BUFFER at " << static_cast<void*>(_data) << " SIZE=" << _size << std::endl;
-    *data_ptr_ptr = _data;
-    *size_ptr = _size;
-    _data = nullptr;
-    _size = 0;
+    std::cerr << "PROFILER: RELEASING BUFFER at " << static_cast<void*>(data_) << " SIZE=" << size_ << std::endl;
+    *data_ptr_ptr = data_;
+    *size_ptr = size_;
+    data_ = nullptr;
+    size_ = 0;
   }
 
   ~profile_buffer() {
-    std::cerr << "PROFILER: FREEING BUFFER at " << static_cast<void*>(_data) << " SIZE=" << _size << std::endl;
-    free(_data);
-    _data = nullptr;
-    _size = 0;
+    std::cerr << "PROFILER: FREEING BUFFER at " << static_cast<void*>(data_) << " SIZE=" << size_ << std::endl;
+    free(data_);
+    data_ = nullptr;
+    size_ = 0;
   }
 
-  uint8_t const* data() const { return _data; }
-  uint8_t* data() { return _data; }
-  size_t size() const { return _size; }
-  size_t valid_size() const { return _valid_size; }
-  void set_valid_size(size_t size) { _valid_size = size; }
+  uint8_t const* data() const { return data_; }
+  uint8_t* data() { return data_; }
+  size_t size() const { return size_; }
+  size_t valid_size() const { return valid_size_; }
+  void set_valid_size(size_t size) { valid_size_ = size; }
 
 private:
   static constexpr size_t ALIGN_BYTES = 8;
-    uint8_t* _data;
-  size_t _size;
-  size_t _valid_size;
+  uint8_t* data_;
+  size_t size_;
+  size_t valid_size_;
 };
 
 struct completed_buffer_queue {
   std::unique_ptr<profile_buffer> get() {
-    std::unique_lock lock(_lock);
-    _cv.wait(lock, [this]{ return _shutdown || _buffers.size() > 0; });
-    if (_buffers.size() > 0) {
-      auto result = std::move(_buffers.front());
-      _buffers.pop();
+    std::unique_lock lock(lock_);
+    cv_.wait(lock, [this]{ return shutdown_ || buffers_.size() > 0; });
+    if (buffers_.size() > 0) {
+      auto result = std::move(buffers_.front());
+      buffers_.pop();
       return result;
     }
     return std::unique_ptr<profile_buffer>(nullptr);
   }
 
   void put(std::unique_ptr<profile_buffer>&& buffer) {
-    std::unique_lock lock(_lock);
-    _buffers.push(std::move(buffer));
+    std::unique_lock lock(lock_);
+    buffers_.push(std::move(buffer));
     lock.unlock();
-    _cv.notify_one();
+    cv_.notify_one();
   }
 
   void shutdown() {
-    std::unique_lock lock(_lock);
-    _shutdown = true;
+    std::unique_lock lock(lock_);
+    shutdown_ = true;
     lock.unlock();
-    _cv.notify_one();
+    cv_.notify_one();
   }
 
 private:
-  std::mutex _lock;
-  std::condition_variable _cv;
-  std::queue<std::unique_ptr<profile_buffer>> _buffers;
-  bool _shutdown = false;
+  std::mutex lock_;
+  std::condition_variable cv_;
+  std::queue<std::unique_ptr<profile_buffer>> buffers_;
+  bool shutdown_ = false;
 };
 
 struct free_buffer_tracker {
-  explicit free_buffer_tracker(size_t size) : _buffer_size(size) {}
+  explicit free_buffer_tracker(size_t size) : buffer_size_(size) {}
 
   std::unique_ptr<profile_buffer> get() {
     {
-      std::lock_guard lock(_lock);
-      if (_buffers.size() > 0) {
-        auto result = std::move(_buffers.top());
-        _buffers.pop();
+      std::lock_guard lock(lock_);
+      if (buffers_.size() > 0) {
+        auto result = std::move(buffers_.top());
+        buffers_.pop();
         return result;
       }
     }
-    std::cerr << "PROFILER: ALLOCATING A BUFFER" << std::endl;
-    return std::make_unique<profile_buffer>(_buffer_size);
+    return std::make_unique<profile_buffer>(buffer_size_);
   }
 
   void put(std::unique_ptr<profile_buffer>&& buffer) {
     buffer->set_valid_size(0);
-    std::lock_guard lock(_lock);
-    if (_buffers.size() < NUM_CACHED_BUFFERS) {
-      _buffers.push(std::move(buffer));
+    std::lock_guard lock(lock_);
+    if (buffers_.size() < NUM_CACHED_BUFFERS) {
+      buffers_.push(std::move(buffer));
     } else {
       std::cerr << "PROFILER: FREEING A BUFFER" << std::endl;
       buffer.reset(nullptr);
@@ -195,9 +194,9 @@ struct free_buffer_tracker {
 
 private:
   static constexpr size_t NUM_CACHED_BUFFERS = 2;
-  std::mutex _lock;
-  std::stack<std::unique_ptr<profile_buffer>> _buffers;
-  size_t _buffer_size;
+  std::mutex lock_;
+  std::stack<std::unique_ptr<profile_buffer>> buffers_;
+  size_t buffer_size_;
 };
 
 void writer_thread_process(JavaVM* vm);
