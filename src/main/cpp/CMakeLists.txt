@@ -301,7 +301,7 @@ add_custom_command(
 # * profiler JNI -----------------------------------------------------------------------------------
 
 add_library(profilerjni SHARED
-  src/ProfilerJni.cpp
+  src/profiler/ProfilerJni.cpp
   ${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/profiler_generated.h
 )
 
@@ -328,6 +328,16 @@ find_library(CUPTI_LIBRARY_PATH cupti_static PATHS
 
 target_link_libraries(profilerjni
   PRIVATE ${CUPTI_LIBRARY_PATH} nvtx3-cpp
+)
+
+add_executable(spark_rapids_profile_converter
+  src/profiler/spark_rapids_profile_converter.cpp
+  ${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/profiler_generated.h
+)
+
+target_include_directories(
+  spark_rapids_profile_converter
+  PRIVATE "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}"
 )
 
 # ##################################################################################################
