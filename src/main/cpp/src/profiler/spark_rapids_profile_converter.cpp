@@ -17,6 +17,7 @@
 /* A tool that converts a spark-rapids profile binary into other forms. */
 
 #include "profiler_generated.h"
+#include "spark_rapids_jni_version.h"
 
 #include <fstream>
 #include <iostream>
@@ -28,6 +29,7 @@
 struct program_options {
   std::optional<std::string_view> output_path;
   bool help = false;
+  bool version = false;
 };
 
 void print_usage()
@@ -37,8 +39,15 @@ void print_usage()
 Converts the spark-rapids profile in profile.bin into other forms.
 
   -h, --help           show this usage message
-  -o, --output=PATH    use PATH as the output filename)"
+  -o, --output=PATH    use PATH as the output filename
+  --version            print the version number
+  )"
     << std::endl;
+}
+
+void print_version()
+{
+  std::cout << "spark_rapids_profile_converter " << SPARK_RAPIDS_JNI_VERSION << std::endl;
 }
 
 std::pair<program_options, std::vector<std::string_view>>
@@ -49,7 +58,7 @@ parse_options(std::vector<std::string_view> args)
   bool seen_output = false;
   auto argp = args.begin();
   while (argp != args.end()) {
-    if (*argp == "-o") {
+    if (*argp == "-o" || *argp == "--output") {
       if (seen_output) {
         throw std::runtime_error("output path cannot be specified twice");
       }
@@ -59,7 +68,11 @@ parse_options(std::vector<std::string_view> args)
       } else {
         throw std::runtime_error("missing argument for output path");
       }
-    } else if (argp->find_first_of(long_output) == 0) {
+    } else if (argp->substr(0, long_output.size()) == long_output) {
+      if (seen_output) {
+        throw std::runtime_error("output path cannot be specified twice");
+      }
+      seen_output = true;
       argp->remove_prefix(long_output.size());
       if (argp->empty()) {
         throw std::runtime_error("missing argument for output path");
@@ -68,6 +81,9 @@ parse_options(std::vector<std::string_view> args)
       }
     } else if (*argp == "-h" || *argp == "--help") {
       opts.help = true;
+      ++argp;
+    } else if (*argp == "--version") {
+      opts.version = true;
       ++argp;
     } else if (argp->empty()) {
       throw std::runtime_error("empty argument");
@@ -144,7 +160,16 @@ int main(int argc, char* argv[])
     print_usage();
     return RESULT_USAGE;
   }
-  if (opts.help || files.size() != 1) {
+  if (opts.help) {
+    print_usage();
+    return RESULT_USAGE;
+  }
+  if (opts.version) {
+    print_version();
+    return RESULT_SUCCESS;
+  }
+  if (files.size() != 1) {
+    std::cerr << "Missing input file." << std::endl;
     print_usage();
     return RESULT_USAGE;
   }
