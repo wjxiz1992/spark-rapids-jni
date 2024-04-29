@@ -128,11 +128,11 @@ size_t read_flatbuffer_size(std::ifstream& in)
   return flatbuffers::EndianScalar(fb_size);
 }
 
-std::unique_ptr<char[]> read_flatbuffer(std::ifstream& in)
+std::unique_ptr<std::vector<char>> read_flatbuffer(std::ifstream& in)
 {
   auto size = read_flatbuffer_size(in);
-  std::unique_ptr<char[]> buffer(new char[size]);
-  checked_read(in, buffer.get(), size);
+  auto buffer = std::make_unique<std::vector<char>>(size);
+  checked_read(in, buffer->data(), size);
   return buffer;
 }
 
@@ -147,10 +147,21 @@ std::ofstream open_output(std::filesystem::path const& path,
   return out;
 }
 
+template<typename T>
+T const* validate_fb(std::vector<char> const& fb, std::string_view const& name)
+{
+  flatbuffers::Verifier::Options verifier_opts;
+  flatbuffers::Verifier verifier(reinterpret_cast<uint8_t const*>(fb.data()), fb.size(), verifier_opts);
+  if (!verifier.VerifyBuffer<T>()) {
+    throw std::runtime_error(std::string("malformed ") + std::string(name) + " record");
+  }
+  return flatbuffers::GetRoot<T>(fb.data());
+}
+
 void verify_profile_header(std::ifstream& in)
 {
   auto fb_ptr = read_flatbuffer(in);
-  auto header = flatbuffers::GetRoot<spark_rapids_jni::profiler::ProfileHeader>(fb_ptr.get());
+  auto header = validate_fb<spark_rapids_jni::profiler::ProfileHeader>(*fb_ptr, "profile header");
   auto magic = header->magic();
   if (magic == nullptr) {
     throw std::runtime_error("does not appear to be a spark-rapids profile");
@@ -180,8 +191,8 @@ void convert_to_nsys_rep(std::ifstream& in, std::string_view const& in_filename,
 #endif
 
   while (!in.eof()) {
-    auto fb = read_flatbuffer(in);
-    auto records = flatbuffers::GetRoot<spark_rapids_jni::profiler::ActivityRecords>(fb.get());
+    auto fb_ptr = read_flatbuffer(in);
+    auto records = validate_fb<spark_rapids_jni::profiler::ActivityRecords>(*fb_ptr, "ActivityRecords");
     std::cerr << "ACTIVITY RECORDS:" << std::endl;
     auto api = records->api();
     if (api != nullptr) {
@@ -199,13 +210,21 @@ void convert_to_nsys_rep(std::ifstream& in, std::string_view const& in_filename,
     if (kernel != nullptr) {
       std::cerr << "NUM KERNEL=" << kernel->size() << std::endl;
     }
-    auto marker = records->device();
+    auto marker = records->marker();
     if (marker != nullptr) {
       std::cerr << "NUM MARKERS=" << marker->size() << std::endl;
     }
     auto marker_data = records->marker_data();
     if (marker_data != nullptr) {
       std::cerr << "NUM MARKER DATA=" << marker_data->size() << std::endl;
+      for (int i = 0; i < marker_data->size(); ++i) {
+        std::cerr << "MARKER DATA " << i << std::endl;
+        auto md = marker_data->Get(i);
+        std::cerr << " FLAGS: " << md->flags();
+        std::cerr << " ID: " << md->id();
+        std::cerr << " COLOR: " << md->color();
+        std::cerr << " CATEGORY: " << md->category() << std::endl;
+      }
     }
     auto memcpy = records->memcpy();
     if (memcpy != nullptr) {
@@ -233,10 +252,12 @@ void convert_to_json(std::ifstream& in, std::ostream& out, program_options const
   if (parser.Parse(spark_rapids_jni::profiler::Profiler_Schema) != 0) {
     std::runtime_error("Internal error: Unable to parse profiler schema");
   }
+  parser.opts.strict_json = true;
   while (!in.eof()) {
-    auto fb = read_flatbuffer(in);
+    auto fb_ptr = read_flatbuffer(in);
+    auto records = validate_fb<spark_rapids_jni::profiler::ActivityRecords>(*fb_ptr, "ActivityRecords");
     std::string json;
-    char const* err = flatbuffers::GenText(parser, fb.get(), &json);
+    char const* err = flatbuffers::GenText(parser, fb_ptr->data(), &json);
     if (err != nullptr) {
       throw std::runtime_error(std::string("Error generating JSON: ") + err);
     }
