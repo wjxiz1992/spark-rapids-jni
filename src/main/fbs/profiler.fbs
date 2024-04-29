@@ -13,6 +13,8 @@
 // limitations under the License.
 
 // Flatbuffer schema for the profiler
+// NOTE: The schema needs to be in a single file because the build embeds it
+//       into the converter tool to be able to emit profile records as JSON.
 
 namespace spark_rapids_jni.profiler;
 
@@ -278,3 +280,5 @@ table OverheadActivity {
   start:uint64;
   end:uint64;
 }
+
+root_type ActivityRecords;
