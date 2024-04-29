@@ -98,6 +98,16 @@ include(cmake/Modules/ConfigureCUDA.cmake) # set other CUDA compilation flags
 # * dependencies ----------------------------------------------------------------------------------
 
 # version header
+find_package(Git REQUIRED)
+# TODO: Needs to be more robust to commit changes with rebuilds, but it works for a fresh build.
+execute_process(COMMAND
+  "${GIT_EXECUTABLE}" describe --abbrev=40 --always --dirty --long
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  OUTPUT_VARIABLE SPARK_RAPIDS_JNI_COMMIT_DETAILS
+  ERROR_QUIET
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
 configure_file(
   src/spark_rapids_jni_version.h.in
   ${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/spark_rapids_jni_version.h
