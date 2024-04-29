@@ -1261,14 +1261,14 @@ JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeShutdown(
 extern "C" CUptiResult CUPTIAPI cuptiNvtxInitialize(void* pfnGetExportTable);
 extern "C" CUptiResult CUPTIAPI cuptiNvtxInitialize2(void* pfnGetExportTable);
 
-extern "C" int InitializeInjectionNvtx(void* p)
+extern "C" JNIEXPORT int InitializeInjectionNvtx(void* p)
 {
   std::cerr << "PROFILER: INIT NVTX V1 CALLED" << std::endl;
   CUptiResult res = cuptiNvtxInitialize(p);
   return (res == CUPTI_SUCCESS) ? 1 : 0;
 }
 
-extern "C" int InitializeInjectionNvtx2(void* p)
+extern "C" JNIEXPORT int InitializeInjectionNvtx2(void* p)
 {
   std::cerr << "PROFILER: INIT NVTX V2 CALLED" << std::endl;
   CUptiResult res = cuptiNvtxInitialize2(p);

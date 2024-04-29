@@ -308,6 +308,8 @@ set_target_properties(
              # set target compile options
              CXX_STANDARD 17
              CXX_STANDARD_REQUIRED ON
+             CXX_VISIBILITY_PRESET "hidden"
+             VISIBILITY_INLINES_HIDDEN TRUE
 )
 
 target_include_directories(
