@@ -19,6 +19,10 @@
 #include "profiler_generated.h"
 #include "spark_rapids_jni_version.h"
 
+#include <flatbuffers/idl.h>
+
+#include <cerrno>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <optional>
@@ -26,9 +30,14 @@
 #include <string>
 #include <vector>
 
+namespace spark_rapids_jni::profiler {
+extern char const* Profiler_Schema;
+}
+
 struct program_options {
-  std::optional<std::string_view> output_path;
+  std::optional<std::filesystem::path> output_path;
   bool help = false;
+  bool json = false;
   bool version = false;
 };
 
@@ -39,6 +48,7 @@ void print_usage()
 Converts the spark-rapids profile in profile.bin into other forms.
 
   -h, --help           show this usage message
+  -j, --json           convert to JSON, default output is stdout
   -o, --output=PATH    use PATH as the output filename
   --version            print the version number
   )"
@@ -82,6 +92,9 @@ parse_options(std::vector<std::string_view> args)
     } else if (*argp == "-h" || *argp == "--help") {
       opts.help = true;
       ++argp;
+    } else if (*argp == "-j" || *argp == "--json") {
+      opts.json = true;
+      ++argp;
     } else if (*argp == "--version") {
       opts.version = true;
       ++argp;
@@ -96,10 +109,22 @@ parse_options(std::vector<std::string_view> args)
   return std::make_pair(opts, std::vector<std::string_view>(argp, args.end()));
 }
 
+void checked_read(std::ifstream& in, char* buffer, size_t size)
+{
+  in.read(buffer, size);
+  if (in.fail()) {
+    if (in.eof()) {
+      throw std::runtime_error("Unexpected EOF");
+    } else {
+      throw std::runtime_error(std::strerror(errno));
+    }
+  }
+}
+
 size_t read_flatbuffer_size(std::ifstream& in)
 {
   flatbuffers::uoffset_t fb_size;
-  in.read(reinterpret_cast<char*>(&fb_size), sizeof(fb_size));
+  checked_read(in, reinterpret_cast<char*>(&fb_size), sizeof(fb_size));
   return flatbuffers::EndianScalar(fb_size);
 }
 
@@ -107,8 +132,19 @@ std::unique_ptr<char[]> read_flatbuffer(std::ifstream& in)
 {
   auto size = read_flatbuffer_size(in);
   std::unique_ptr<char[]> buffer(new char[size]);
-  in.read(buffer.get(), size);
+  checked_read(in, buffer.get(), size);
   return buffer;
+}
+
+std::ofstream open_output(std::filesystem::path const& path,
+                          std::ios::openmode mode = std::ios::out)
+{
+  if (std::filesystem::exists(path)) {
+    throw std::runtime_error(path.string() + " already exists");
+  }
+  std::ofstream out(path, mode);
+  out.exceptions(std::ios::badbit);
+  return out;
 }
 
 void verify_profile_header(std::ifstream& in)
@@ -132,11 +168,85 @@ void verify_profile_header(std::ifstream& in)
   }
 }
 
-void convert_to_nsys_rep(std::string_view const& in_file, std::string const& out_file)
+void convert_to_nsys_rep(std::ifstream& in, std::string_view const& in_filename,
+                         program_options const& opts)
 {
-  std::ifstream in(std::string(in_file), std::ios_base::binary | std::ios_base::in);
   verify_profile_header(in);
 
+#if 0
+  // TODO: get basename-only
+  std::filesystem::path output_path(opts.output_path ? std::string(opts.output_path.value())
+    : std::string(in_filename) + ".nsys-rep");
+#endif
+
+  while (!in.eof()) {
+    auto fb = read_flatbuffer(in);
+    auto records = flatbuffers::GetRoot<spark_rapids_jni::profiler::ActivityRecords>(fb.get());
+    std::cerr << "ACTIVITY RECORDS:" << std::endl;
+    auto api = records->api();
+    if (api != nullptr) {
+      std::cerr << "NUM APIS=" << api->size() << std::endl;
+    }
+    auto device = records->device();
+    if (device != nullptr) {
+      std::cerr << "NUM DEVICES=" << device->size() << std::endl;
+    }
+    auto dropped = records->dropped();
+    if (dropped != nullptr) {
+      std::cerr << "NUM DROPPED=" << dropped->size() << std::endl;
+    }
+    auto kernel = records->kernel();
+    if (kernel != nullptr) {
+      std::cerr << "NUM KERNEL=" << kernel->size() << std::endl;
+    }
+    auto marker = records->device();
+    if (marker != nullptr) {
+      std::cerr << "NUM MARKERS=" << marker->size() << std::endl;
+    }
+    auto marker_data = records->marker_data();
+    if (marker_data != nullptr) {
+      std::cerr << "NUM MARKER DATA=" << marker_data->size() << std::endl;
+    }
+    auto memcpy = records->memcpy();
+    if (memcpy != nullptr) {
+      std::cerr << "NUM MEMCPY=" << memcpy->size() << std::endl;
+    }
+    auto memset = records->memset();
+    if (device != nullptr) {
+      std::cerr << "NUM MEMSET=" << memset->size() << std::endl;
+    }
+    auto overhead = records->overhead();
+    if (overhead != nullptr) {
+      std::cerr << "NUM OVERHEADS=" << overhead->size() << std::endl;
+    }
+
+    in.peek();
+  }
+  if (!in.eof()) {
+    throw std::runtime_error(std::strerror(errno));
+  }
+}
+
+void convert_to_json(std::ifstream& in, std::ostream& out, program_options const& opts)
+{
+  flatbuffers::Parser parser;
+  if (parser.Parse(spark_rapids_jni::profiler::Profiler_Schema) != 0) {
+    std::runtime_error("Internal error: Unable to parse profiler schema");
+  }
+  while (!in.eof()) {
+    auto fb = read_flatbuffer(in);
+    std::string json;
+    char const* err = flatbuffers::GenText(parser, fb.get(), &json);
+    if (err != nullptr) {
+      throw std::runtime_error(std::string("Error generating JSON: ") + err);
+    }
+    out << json;
+
+    in.peek();
+  }
+  if (!in.eof()) {
+    throw std::runtime_error(std::strerror(errno));
+  }
 }
 
 int main(int argc, char* argv[])
@@ -174,10 +284,22 @@ int main(int argc, char* argv[])
     return RESULT_USAGE;
   }
   auto input_file = files.front();
-  std::string output_path(opts.output_path ? std::string(opts.output_path.value())
-    : std::string(input_file) + ".nsys-rep");
   try {
-    convert_to_nsys_rep(input_file, output_path);
+    std::ifstream in(std::string(input_file), std::ios::binary | std::ios::in);
+    in.exceptions(std::istream::badbit);
+    if (opts.json) {
+      if (opts.output_path) {
+        std::ofstream out = open_output(opts.output_path.value());
+        convert_to_json(in, out, opts);
+      } else {
+        convert_to_json(in, std::cout, opts);
+      }
+    } else {
+      convert_to_nsys_rep(in, input_file, opts);
+    }
+  } catch (std::system_error const& e) {
+    std::cerr << "Error converting " << input_file << ": " << e.code().message() << std::endl;
+    return RESULT_FAILURE;
   } catch (std::exception const& e) {
     std::cerr << "Error converting " << input_file << ": " << e.what() << std::endl;
     return RESULT_FAILURE;
