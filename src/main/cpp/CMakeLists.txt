@@ -61,7 +61,10 @@ set(SPARK_RAPIDS_JNI_BUILD_TESTS ${BUILD_TESTS})
 set(SPARK_RAPIDS_JNI_BUILD_BENCHMARKS ${BUILD_BENCHMARKS})
 set(SPARK_RAPIDS_JNI_BUILD_FAULTINJ ${BUILD_FAULTINJ})
 if(NOT SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR)
-  set(SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR ${SPARK_RAPIDS_JNI_BINARY_DIR}/generated-includes)
+  set(SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR ${SPARK_RAPIDS_JNI_BINARY_DIR}/generated/include)
+endif()
+if(NOT SPARK_RAPIDS_JNI_GENERATED_SRC_DIR)
+  set(SPARK_RAPIDS_JNI_GENERATED_SRC_DIR ${SPARK_RAPIDS_JNI_BINARY_DIR}/generated/src)
 endif()
 
 # Set RMM logging level
@@ -108,7 +111,7 @@ execute_process(COMMAND
 )
 configure_file(
   src/spark_rapids_jni_version.h.in
-  ${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/spark_rapids_jni_version.h
+  "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/spark_rapids_jni_version.h"
   @ONLY
 )
 
@@ -301,10 +304,11 @@ endif()
 # ##################################################################################################
 # * flatbuffer generation---------------------------------------------------------------------------
 
+set(SPARK_RAPIDS_JNI_FBS_DIR "${SPARK_RAPIDS_JNI_SOURCE_DIR}/../fbs")
 add_custom_command(
   OUTPUT ${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/profiler_generated.h
-  DEPENDS ${SPARK_RAPIDS_JNI_SOURCE_DIR}/../fbs/profiler.fbs
-  WORKING_DIRECTORY ${SPARK_RAPIDS_JNI_SOURCE_DIR}/../fbs
+  DEPENDS "${SPARK_RAPIDS_JNI_FBS_DIR}/profiler.fbs"
+  WORKING_DIRECTORY "${SPARK_RAPIDS_JNI_FBS_DIR}"
   VERBATIM
   COMMAND ${CMAKE_COMMAND} -E make_directory "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}"
   COMMAND
@@ -317,7 +321,7 @@ add_custom_command(
 
 add_library(profilerjni SHARED
   src/profiler/ProfilerJni.cpp
-  ${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/profiler_generated.h
+  "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/profiler_generated.h"
 )
 
 set_target_properties(
@@ -347,16 +351,28 @@ target_link_libraries(profilerjni
   PRIVATE ${CUPTI_LIBRARY_PATH} nvtx3-cpp
 )
 
+file(READ "${SPARK_RAPIDS_JNI_FBS_DIR}/profiler.fbs" SPARK_RAPIDS_JNI_PROFILER_SCHEMA)
+configure_file(
+  src/profiler/profiler_schema.cpp.in
+  "${SPARK_RAPIDS_JNI_GENERATED_SRC_DIR}/profiler_schema.cpp"
+  @ONLY
+)
+
+find_library(FLATBUFFERS_LIB flatbuffers)
+
 add_executable(spark_rapids_profile_converter
   src/profiler/spark_rapids_profile_converter.cpp
-  ${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/profiler_generated.h
-  ${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/spark_rapids_jni_version.h
+  "${SPARK_RAPIDS_JNI_GENERATED_SRC_DIR}/profiler_schema.cpp"
+  "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/profiler_generated.h"
+  "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/spark_rapids_jni_version.h"
 )
 
 target_include_directories(
   spark_rapids_profile_converter
   PRIVATE "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}"
 )
+
+target_link_libraries(spark_rapids_profile_converter "${FLATBUFFERS_LIB}")
 
 # ##################################################################################################
 # * add tests -------------------------------------------------------------------------------------
