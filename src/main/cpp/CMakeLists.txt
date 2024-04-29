@@ -97,6 +97,13 @@ include(cmake/Modules/ConfigureCUDA.cmake) # set other CUDA compilation flags
 # ##################################################################################################
 # * dependencies ----------------------------------------------------------------------------------
 
+# version header
+configure_file(
+  src/spark_rapids_jni_version.h.in
+  ${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/spark_rapids_jni_version.h
+  @ONLY
+)
+
 # find NVTX
 include(${CUDF_DIR}/cpp/cmake/thirdparty/get_nvtx.cmake)
 
@@ -331,6 +338,7 @@ target_link_libraries(profilerjni
 add_executable(spark_rapids_profile_converter
   src/profiler/spark_rapids_profile_converter.cpp
   ${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/profiler_generated.h
+  ${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/spark_rapids_jni_version.h
 )
 
 target_include_directories(
