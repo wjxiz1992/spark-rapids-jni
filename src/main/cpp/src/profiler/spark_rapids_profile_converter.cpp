@@ -16,6 +16,13 @@
 
 /* A tool that converts a spark-rapids profile binary into other forms. */
 
+#if 0
+#include <stdexcept>
+#define FLATBUFFERS_ASSERT(x) do { if (!(x)) { \
+  throw std::runtime_error("flatbuffers assert"); } } while(0)
+#define FLATBUFFERS_DEBUG_VERIFICATION_FAILURE
+#endif
+
 #include "profiler_generated.h"
 #include "spark_rapids_jni_version.h"
 
@@ -131,8 +138,9 @@ size_t read_flatbuffer_size(std::ifstream& in)
 std::unique_ptr<std::vector<char>> read_flatbuffer(std::ifstream& in)
 {
   auto size = read_flatbuffer_size(in);
-  auto buffer = std::make_unique<std::vector<char>>(size);
-  checked_read(in, buffer->data(), size);
+  auto buffer = std::make_unique<std::vector<char>>(size + sizeof(flatbuffers::uoffset_t));
+  *reinterpret_cast<flatbuffers::uoffset_t*>(buffer->data()) = static_cast<flatbuffers::uoffset_t>(size);
+  checked_read(in, buffer->data() + sizeof(flatbuffers::uoffset_t), size);
   return buffer;
 }
 
@@ -151,11 +159,12 @@ template<typename T>
 T const* validate_fb(std::vector<char> const& fb, std::string_view const& name)
 {
   flatbuffers::Verifier::Options verifier_opts;
+  verifier_opts.assert = true;
   flatbuffers::Verifier verifier(reinterpret_cast<uint8_t const*>(fb.data()), fb.size(), verifier_opts);
-  if (!verifier.VerifyBuffer<T>()) {
+  if (!verifier.VerifySizePrefixedBuffer<T>(nullptr)) {
     throw std::runtime_error(std::string("malformed ") + std::string(name) + " record");
   }
-  return flatbuffers::GetRoot<T>(fb.data());
+  return flatbuffers::GetSizePrefixedRoot<T>(fb.data());
 }
 
 void verify_profile_header(std::ifstream& in)
