@@ -15,6 +15,7 @@
  */
 
 #include "profiler_generated.h"
+#include "spark_rapids_jni_version.h"
 
 #include <cupti.h>
 #include <jni.h>
@@ -1074,8 +1075,7 @@ void process_overhead(CUpti_ActivityOverhead const* r)
 void write_profile_header()
 {
   auto& fbb = State->fb_builder;
-  // TODO: This needs to be passed in by Java during init
-  auto writer_version = fbb.CreateString("24.06.0");
+  auto writer_version = fbb.CreateString(spark_rapids_jni::Version);
   auto magic = fbb.CreateString("spark-rapids profile");
   auto header = spark_rapids_jni::profiler::CreateProfileHeader(fbb, magic, PROFILE_VERSION, writer_version);
   fbb.FinishSizePrefixed(header);

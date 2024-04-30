@@ -14,4 +14,10 @@
  * limitations under the License.
  */
 
-#define SPARK_RAPIDS_JNI_VERSION "@CMAKE_PROJECT_VERSION@ @SPARK_RAPIDS_JNI_COMMIT_DETAILS@"
+#pragma once
+
+namespace spark_rapids_jni {
+
+extern char const Version[];
+
+}

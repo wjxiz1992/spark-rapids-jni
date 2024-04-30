@@ -58,16 +58,16 @@ Converts the spark-rapids profile in profile.bin into other forms.
 
   -h, --help                show this usage message
   -j, --json                convert to JSON, default output is stdout
-  -i, --json-indent=INDENT  indentation to use for JSON. =0 is no indent, <0 also removes newlines
+  -i, --json-indent=INDENT  indentation to use for JSON. 0 is no indent, less than 0 also removes newlines
   -o, --output=PATH         use PATH as the output filename
-  --version                 print the version number
+  -V, --version             print the version number
   )"
     << std::endl;
 }
 
 void print_version()
 {
-  std::cout << "spark_rapids_profile_converter " << SPARK_RAPIDS_JNI_VERSION << std::endl;
+  std::cout << "spark_rapids_profile_converter " << spark_rapids_jni::Version << std::endl;
 }
 
 std::pair<program_options, std::vector<std::string_view>>
@@ -136,7 +136,7 @@ parse_options(std::vector<std::string_view> args)
         }
         ++argp;
       }
-    } else if (*argp == "--version") {
+    } else if (*argp == "-V" || *argp == "--version") {
       opts.version = true;
       ++argp;
     } else if (argp->empty()) {
