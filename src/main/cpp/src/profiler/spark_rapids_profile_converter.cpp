@@ -128,7 +128,7 @@ void checked_read(std::ifstream& in, char* buffer, size_t size)
   }
 }
 
-size_t read_flatbuffer_size(std::ifstream& in)
+flatbuffers::uoffset_t read_flatbuffer_size(std::ifstream& in)
 {
   flatbuffers::uoffset_t fb_size;
   checked_read(in, reinterpret_cast<char*>(&fb_size), sizeof(fb_size));
@@ -138,8 +138,12 @@ size_t read_flatbuffer_size(std::ifstream& in)
 std::unique_ptr<std::vector<char>> read_flatbuffer(std::ifstream& in)
 {
   auto size = read_flatbuffer_size(in);
+  // Allocate a buffer that can hold the flatbuffer along with the prefixed size.
+  // SizePrefixed APIs require size to be at the front of the buffer and alignment
+  // of fields is planned out with that size.
   auto buffer = std::make_unique<std::vector<char>>(size + sizeof(flatbuffers::uoffset_t));
-  *reinterpret_cast<flatbuffers::uoffset_t*>(buffer->data()) = static_cast<flatbuffers::uoffset_t>(size);
+  auto size_ptr = reinterpret_cast<flatbuffers::uoffset_t*>(buffer->data());
+  *size_ptr = size;
   checked_read(in, buffer->data() + sizeof(flatbuffers::uoffset_t), size);
   return buffer;
 }
