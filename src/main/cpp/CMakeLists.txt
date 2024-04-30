@@ -63,8 +63,8 @@ set(SPARK_RAPIDS_JNI_BUILD_FAULTINJ ${BUILD_FAULTINJ})
 if(NOT SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR)
   set(SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR ${SPARK_RAPIDS_JNI_BINARY_DIR}/generated/include)
 endif()
-if(NOT SPARK_RAPIDS_JNI_GENERATED_SRC_DIR)
-  set(SPARK_RAPIDS_JNI_GENERATED_SRC_DIR ${SPARK_RAPIDS_JNI_BINARY_DIR}/generated/src)
+if(NOT SPARK_RAPIDS_JNI_GENERATED_SOURCE_DIR)
+  set(SPARK_RAPIDS_JNI_GENERATED_SOURCE_DIR ${SPARK_RAPIDS_JNI_BINARY_DIR}/generated/src)
 endif()
 
 # Set RMM logging level
@@ -110,8 +110,8 @@ execute_process(COMMAND
   OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 configure_file(
-  src/spark_rapids_jni_version.h.in
-  "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/spark_rapids_jni_version.h"
+  src/spark_rapids_jni_version.cpp.in
+  "${SPARK_RAPIDS_JNI_GENERATED_SOURCE_DIR}/spark_rapids_jni_version.cpp"
   @ONLY
 )
 
@@ -317,6 +317,7 @@ add_custom_command(
 
 add_library(profilerjni SHARED
   src/profiler/ProfilerJni.cpp
+  "${SPARK_RAPIDS_JNI_GENERATED_SOURCE_DIR}/spark_rapids_jni_version.cpp"
   "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/profiler_generated.h"
 )
 
@@ -336,6 +337,7 @@ target_include_directories(
   PRIVATE "${JNI_INCLUDE_DIRS}"
           "${CUDAToolkit_INCLUDE_DIRS}"
           "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}"
+          "${SPARK_RAPIDS_JNI_SOURCE_DIR}/src"
 )
 
 find_library(CUPTI_LIBRARY_PATH cupti_static PATHS
@@ -350,7 +352,7 @@ target_link_libraries(profilerjni
 file(READ "${SPARK_RAPIDS_JNI_FBS_DIR}/profiler.fbs" SPARK_RAPIDS_JNI_PROFILER_SCHEMA)
 configure_file(
   src/profiler/profiler_schema.cpp.in
-  "${SPARK_RAPIDS_JNI_GENERATED_SRC_DIR}/profiler_schema.cpp"
+  "${SPARK_RAPIDS_JNI_GENERATED_SOURCE_DIR}/profiler_schema.cpp"
   @ONLY
 )
 
@@ -358,14 +360,16 @@ find_library(FLATBUFFERS_LIB flatbuffers)
 
 add_executable(spark_rapids_profile_converter
   src/profiler/spark_rapids_profile_converter.cpp
-  "${SPARK_RAPIDS_JNI_GENERATED_SRC_DIR}/profiler_schema.cpp"
+  "${SPARK_RAPIDS_JNI_GENERATED_SOURCE_DIR}/profiler_schema.cpp"
+  "${SPARK_RAPIDS_JNI_GENERATED_SOURCE_DIR}/spark_rapids_jni_version.cpp"
   "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/profiler_generated.h"
-  "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/spark_rapids_jni_version.h"
 )
 
 target_include_directories(
   spark_rapids_profile_converter
-  PRIVATE "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}"
+  PRIVATE
+  "${SPARK_RAPIDS_JNI_SOURCE_DIR}/src"
+  "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}"
 )
 
 target_link_libraries(spark_rapids_profile_converter "${FLATBUFFERS_LIB}")
