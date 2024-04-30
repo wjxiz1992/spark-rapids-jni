@@ -195,8 +195,6 @@ void verify_profile_header(std::ifstream& in)
 void convert_to_nsys_rep(std::ifstream& in, std::string_view const& in_filename,
                          program_options const& opts)
 {
-  verify_profile_header(in);
-
 #if 0
   // TODO: get basename-only
   std::filesystem::path output_path(opts.output_path ? std::string(opts.output_path.value())
@@ -261,14 +259,11 @@ void convert_to_nsys_rep(std::ifstream& in, std::string_view const& in_filename,
 
 void convert_to_json(std::ifstream& in, std::ostream& out, program_options const& opts)
 {
-  verify_profile_header(in);
-
   flatbuffers::Parser parser;
   if (parser.Parse(spark_rapids_jni::profiler::Profiler_Schema) != 0) {
     std::runtime_error("Internal error: Unable to parse profiler schema");
   }
   parser.opts.strict_json = true;
-
   while (!in.eof()) {
     auto fb_ptr = read_flatbuffer(in);
     auto records = validate_fb<spark_rapids_jni::profiler::ActivityRecords>(*fb_ptr, "ActivityRecords");
@@ -324,6 +319,7 @@ int main(int argc, char* argv[])
   try {
     std::ifstream in(std::string(input_file), std::ios::binary | std::ios::in);
     in.exceptions(std::istream::badbit);
+    verify_profile_header(in);
     if (opts.json) {
       if (opts.output_path) {
         std::ofstream out = open_output(opts.output_path.value());
