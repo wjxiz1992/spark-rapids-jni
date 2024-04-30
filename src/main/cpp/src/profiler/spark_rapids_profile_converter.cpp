@@ -29,6 +29,7 @@
 #include <flatbuffers/idl.h>
 
 #include <cerrno>
+#include <charconv>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -45,6 +46,7 @@ struct program_options {
   std::optional<std::filesystem::path> output_path;
   bool help = false;
   bool json = false;
+  int  json_indent = 2;
   bool version = false;
 };
 
@@ -54,10 +56,11 @@ void print_usage()
   std::cout << R"(
 Converts the spark-rapids profile in profile.bin into other forms.
 
-  -h, --help           show this usage message
-  -j, --json           convert to JSON, default output is stdout
-  -o, --output=PATH    use PATH as the output filename
-  --version            print the version number
+  -h, --help                show this usage message
+  -j, --json                convert to JSON, default output is stdout
+  -i, --json-indent=INDENT  indentation to use for JSON. =0 is no indent, <0 also removes newlines
+  -o, --output=PATH         use PATH as the output filename
+  --version                 print the version number
   )"
     << std::endl;
 }
@@ -72,7 +75,9 @@ parse_options(std::vector<std::string_view> args)
 {
   program_options opts{};
   std::string_view long_output("--output=");
+  std::string_view long_json_indent("--json-indent=");
   bool seen_output = false;
+  bool seen_json_indent = false;
   auto argp = args.begin();
   while (argp != args.end()) {
     if (*argp == "-o" || *argp == "--output") {
@@ -102,6 +107,35 @@ parse_options(std::vector<std::string_view> args)
     } else if (*argp == "-j" || *argp == "--json") {
       opts.json = true;
       ++argp;
+    } else if (*argp == "-i" || *argp == "--json-indent") {
+      if (seen_json_indent) {
+        throw std::runtime_error("JSON indent cannot be specified twice");
+      }
+      seen_json_indent = true;
+      if (++argp != args.end()) {
+        auto [ptr, err] = std::from_chars(argp->data(), argp->end(), opts.json_indent);
+        if (err != std::errc() || ptr != argp->end()) {
+          throw std::runtime_error("invalid JSON indent value");
+        }
+        ++argp;
+      } else {
+        throw std::runtime_error("missing argument for JSON indent");
+      }
+    } else if (argp->substr(0, long_json_indent.size()) == long_json_indent) {
+      if (seen_json_indent) {
+        throw std::runtime_error("JSON indent cannot be specified twice");
+      }
+      seen_json_indent = true;
+      argp->remove_prefix(long_json_indent.size());
+      if (argp->empty()) {
+        throw std::runtime_error("missing argument for JSON indent");
+      } else {
+        auto [ptr, err] = std::from_chars(argp->data(), argp->end(), opts.json_indent);
+        if (err != std::errc() || ptr != argp->end()) {
+          throw std::runtime_error("invalid JSON indent value");
+        }
+        ++argp;
+      }
     } else if (*argp == "--version") {
       opts.version = true;
       ++argp;
@@ -264,6 +298,7 @@ void convert_to_json(std::ifstream& in, std::ostream& out, program_options const
     std::runtime_error("Internal error: Unable to parse profiler schema");
   }
   parser.opts.strict_json = true;
+  parser.opts.indent_step = opts.json_indent;
   while (!in.eof()) {
     auto fb_ptr = read_flatbuffer(in);
     auto records = validate_fb<spark_rapids_jni::profiler::ActivityRecords>(*fb_ptr, "ActivityRecords");
