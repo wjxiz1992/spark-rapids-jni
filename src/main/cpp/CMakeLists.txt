@@ -110,7 +110,8 @@ endif()
 
 # cudf
 if(BUILD_TESTS)
-  find_package(GTest REQUIRED)
+  include(${rapids-cmake-dir}/cpm/gtest.cmake)
+  rapids_cpm_gtest(BUILD_STATIC)
   rapids_find_package(cudf REQUIRED COMPONENTS testing)
 else()
   rapids_find_package(cudf REQUIRED)
@@ -163,7 +164,6 @@ add_library(
   src/ParseURIJni.cpp
   src/RowConversionJni.cpp
   src/SparkResourceAdaptorJni.cpp
-  src/TableOperationJni.cpp
   src/StringDigitsPatternJni.cpp
   src/ZOrderJni.cpp
   src/bloom_filter.cu
@@ -178,7 +178,6 @@ add_library(
   src/histogram.cu
   src/map_utils.cu
   src/murmur_hash.cu
-  src/padding_partition.cu
   src/parse_uri.cu
   src/row_conversion.cu
   src/string_digits_pattern.cu
