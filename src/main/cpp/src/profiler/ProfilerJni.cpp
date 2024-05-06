@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <thread>
+#include <time.h>
 #include <vector>
 
 // HACK - FIXME
@@ -232,7 +233,8 @@ struct subscriber_state {
 subscriber_state* State = nullptr;
 jclass Data_writer_jclass;
 jmethodID Data_writer_write_method;
-
+uint64_t Flush_period_msec;
+uint64_t Last_flush_time_msec;
 
 char const* get_cupti_error(CUptiResult rc)
 {
@@ -248,6 +250,16 @@ void check_cupti(CUptiResult rc, std::string msg)
   if (rc != CUPTI_SUCCESS) {
     throw std::runtime_error(msg + ": " + get_cupti_error(rc));
   }
+}
+
+uint64_t timestamp_now()
+{
+  timespec info;
+  if (clock_gettime(CLOCK_MONOTONIC_RAW, &info) != 0) {
+    std::cerr << "PROFILER: Unable to determine current time, aborting!" << std::endl;
+    abort();
+  }
+  return info.tv_sec * 1e3 + info.tv_nsec / 1e6;
 }
 
 //void domain_state_callback(CUpti_CallbackId callback_id, CUpti_StateData const* data_ptr)
@@ -283,6 +295,43 @@ void check_cupti(CUptiResult rc, std::string msg)
 //  }
 //}
 
+void on_driver_launch_exit()
+{
+  auto now = timestamp_now();
+  if (now - Last_flush_time_msec >= Flush_period_msec) {
+    auto rc = cuptiActivityFlushAll(0);
+    if (rc != CUPTI_SUCCESS) {
+      std::cerr << "PROFILER: Error interval flushing records: " << get_cupti_error(rc) << std::endl;
+    }
+    Last_flush_time_msec = now;
+  }
+}
+
+void domain_driver_callback(CUpti_CallbackId callback_id, CUpti_CallbackData const* cb_data)
+{
+  if (cb_data->callbackSite == CUPTI_API_ENTER) {
+    return;
+  }
+
+  switch (callback_id) {
+    case CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch:
+    case CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch_ptsz:
+    case CUPTI_DRIVER_TRACE_CBID_cuLaunch:
+    case CUPTI_DRIVER_TRACE_CBID_cuLaunchCooperativeKernel:
+    case CUPTI_DRIVER_TRACE_CBID_cuLaunchCooperativeKernel_ptsz:
+    case CUPTI_DRIVER_TRACE_CBID_cuLaunchCooperativeKernelMultiDevice:
+    case CUPTI_DRIVER_TRACE_CBID_cuLaunchGrid:
+    case CUPTI_DRIVER_TRACE_CBID_cuLaunchGridAsync:
+    case CUPTI_DRIVER_TRACE_CBID_cuLaunchKernel:
+    case CUPTI_DRIVER_TRACE_CBID_cuLaunchKernel_ptsz:
+      on_driver_launch_exit();
+      break;
+    default:
+      std::cerr << "PROFILER: Unexpected driver API callback for " << callback_id << std::endl;
+      break;
+  }
+}
+
 void domain_runtime_callback(CUpti_CallbackId callback_id, CUpti_CallbackData const* data_ptr)
 {
   switch (callback_id) {
@@ -309,6 +358,7 @@ void CUPTIAPI callback_handler(void*, CUpti_CallbackDomain domain,
     return;
   }
 
+  auto cb_data = static_cast<CUpti_CallbackData const *>(callback_data_ptr);
   switch (domain) {
 //    case CUPTI_CB_DOMAIN_STATE:
 //    {
@@ -316,12 +366,12 @@ void CUPTIAPI callback_handler(void*, CUpti_CallbackDomain domain,
 //      domain_state_callback(callback_id, domain_data);
 //      break;
 //    }
-    case CUPTI_CB_DOMAIN_RUNTIME_API:
-    {
-      auto runtime_data = static_cast<CUpti_CallbackData const *>(callback_data_ptr);
-      domain_runtime_callback(callback_id, runtime_data);
+    case CUPTI_CB_DOMAIN_DRIVER_API:
+      domain_driver_callback(callback_id, cb_data);
       break;
-    }
+    case CUPTI_CB_DOMAIN_RUNTIME_API:
+      domain_runtime_callback(callback_id, cb_data);
+      break;
     default:
       break;
   }
@@ -1186,7 +1236,7 @@ void writer_thread_process(JavaVM* vm)
 extern "C" {
 
 JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeInit(JNIEnv* env, jclass,
-    jstring j_lib_path, jobject j_writer, jlong write_buffer_size, jint flush_period_millis)
+    jstring j_lib_path, jobject j_writer, jlong write_buffer_size, jint flush_period_msec)
 {
   try {
     cache_writer_callback_method(env);
@@ -1202,6 +1252,27 @@ JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeInit(JNIE
     check_cupti(rc, "Error initializing CUPTI");
     rc = cuptiEnableCallback(1, State->subscriber_handle, CUPTI_CB_DOMAIN_RUNTIME_API,
         CUPTI_RUNTIME_TRACE_CBID_cudaDeviceReset_v3020);
+    if (flush_period_msec > 0) {
+      std::cerr << "PROFILER: Flushing activity records every " << flush_period_msec << " milliseconds" << std::endl;
+      Flush_period_msec = static_cast<uint64_t>(flush_period_msec);
+      Last_flush_time_msec = timestamp_now();
+      CUpti_CallbackId const driver_launch_callback_ids[] = {
+        CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch,
+        CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch_ptsz,
+        CUPTI_DRIVER_TRACE_CBID_cuLaunch,
+        CUPTI_DRIVER_TRACE_CBID_cuLaunchCooperativeKernel,
+        CUPTI_DRIVER_TRACE_CBID_cuLaunchCooperativeKernel_ptsz,
+        CUPTI_DRIVER_TRACE_CBID_cuLaunchCooperativeKernelMultiDevice,
+        CUPTI_DRIVER_TRACE_CBID_cuLaunchGrid,
+        CUPTI_DRIVER_TRACE_CBID_cuLaunchGridAsync,
+        CUPTI_DRIVER_TRACE_CBID_cuLaunchKernel,
+        CUPTI_DRIVER_TRACE_CBID_cuLaunchKernel_ptsz
+      };
+      for (CUpti_CallbackId const id : driver_launch_callback_ids) {
+        rc = cuptiEnableCallback(1, State->subscriber_handle, CUPTI_CB_DOMAIN_DRIVER_API, id);
+        check_cupti(rc, "Error registering driver launch callbacks");
+      }
+    }
     check_cupti(rc, "Error enabling device reset callback");
 //    rc = cuptiEnableCallback(1, State->subscriber_handle, CUPTI_CB_DOMAIN_STATE,
 //        CUPTI_CBID_STATE_FATAL_ERROR);
@@ -1226,12 +1297,6 @@ JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeInit(JNIE
     check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MARKER), "Error enabling marker activity");
     check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL), "Error enabling concurrent kernel activity");
     check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_OVERHEAD), "Error enabling overhead activity");
-
-    if (flush_period_millis > 0) {
-      std::cerr << "PROFILER: Flushing activity records every " << flush_period_millis << " milliseconds" << std::endl;
-      // TODO: Does not seem to be working? May need manual, periodic flushing
-      check_cupti(cuptiActivityFlushPeriod(flush_period_millis), "Error requesting periodic activity flush");
-    }
   }
   CATCH_STD(env, );
 }
