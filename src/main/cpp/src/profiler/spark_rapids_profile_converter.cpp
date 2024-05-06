@@ -36,6 +36,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace spark_rapids_jni::profiler {
@@ -48,6 +49,60 @@ struct program_options {
   bool json = false;
   int  json_indent = 2;
   bool version = false;
+};
+
+struct event {
+  enum struct type_id {
+    API,
+    DEVICE,
+    KERNEL,
+    MARKER,
+    MARKER_DATA,
+    MEMCPY,
+    MEMSET,
+    OVERHEAD
+  };
+  type_id id;
+  void const* fb_data;
+};
+
+struct thread_id {
+  uint32_t pid;
+  uint32_t tid;
+
+  bool operator==(thread_id const& o) const {
+    return pid == o.pid && tid == o.tid;
+  }
+};
+
+
+template<> struct std::hash<thread_id> {
+  std::size_t operator()(thread_id const& t) const {
+    // TODO: use a real hash
+    return std::hash<uint32_t>{}(t.pid) ^ (std::hash<uint32_t>{}(t.tid) << 1);
+  }
+};
+
+struct stream_id {
+  uint32_t device;
+  uint32_t context;
+  uint32_t stream;
+
+  bool operator==(stream_id const& s) const {
+    return device == s.device && context == s.context && stream == s.stream;
+  }
+};
+
+template<> struct std::hash<stream_id> {
+  std::size_t operator()(stream_id const& s) const {
+    // TODO: use a real hash
+    return std::hash<uint32_t>{}(s.device) ^ (std::hash<uint32_t>{}(s.context) << 1) ^ (std::hash<uint32_t>{}(s.stream) << 2);
+  }
+};
+
+struct event_streams {
+  std::unordered_map<thread_id, std::vector<event>> cpu;
+  std::unordered_map<stream_id, std::vector<event>> gpu;
 };
 
 void print_usage()
@@ -235,13 +290,24 @@ void convert_to_nsys_rep(std::ifstream& in, std::string_view const& in_filename,
     : std::string(in_filename) + ".nsys-rep");
 #endif
 
+  event_streams events;
+  size_t num_dropped_records = 0;
   while (!in.eof()) {
     auto fb_ptr = read_flatbuffer(in);
     auto records = validate_fb<spark_rapids_jni::profiler::ActivityRecords>(*fb_ptr, "ActivityRecords");
-    std::cerr << "ACTIVITY RECORDS:" << std::endl;
     auto api = records->api();
     if (api != nullptr) {
-      std::cerr << "NUM APIS=" << api->size() << std::endl;
+      for (int i = 0; i < api->size(); ++i) {
+        auto a = api->Get(i);
+        thread_id tid{a->process_id(), a->thread_id()};
+        event e{event::type_id::API, a};
+        auto it = events.cpu.find(tid);
+        if (it == events.cpu.end()) {
+          events.cpu.emplace(tid, std::initializer_list<event>{e});
+        } else {
+          it->second.push_back(e);
+        }
+      }
     }
     auto device = records->device();
     if (device != nullptr) {
@@ -249,7 +315,10 @@ void convert_to_nsys_rep(std::ifstream& in, std::string_view const& in_filename,
     }
     auto dropped = records->dropped();
     if (dropped != nullptr) {
-      std::cerr << "NUM DROPPED=" << dropped->size() << std::endl;
+      for (int i = 0; i < dropped->size(); ++i) {
+        auto d = dropped->Get(i);
+        num_dropped_records += d->num_dropped();
+      }
     }
     auto kernel = records->kernel();
     if (kernel != nullptr) {
@@ -288,6 +357,10 @@ void convert_to_nsys_rep(std::ifstream& in, std::string_view const& in_filename,
   }
   if (!in.eof()) {
     throw std::runtime_error(std::strerror(errno));
+  }
+  if (num_dropped_records) {
+    std::cerr << "Warning: " << num_dropped_records
+      << " records were noted as dropped in the profile" << std::endl;
   }
 }
 
