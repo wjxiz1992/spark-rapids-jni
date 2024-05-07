@@ -1143,7 +1143,7 @@ void report_num_dropped_records()
 
 void process_cupti_buffer(uint8_t* buffer, size_t valid_size)
 {
-#if 1
+#if 0
   print_buffer(buffer, valid_size);
 #endif
 
