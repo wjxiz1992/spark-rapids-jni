@@ -97,18 +97,24 @@ struct profile_buffer {
       data_ = nullptr;
       size_ = 0;
     }
+#if 0
     std::cerr << "PROFILER: ALLOCATED BUFFER at " << static_cast<void*>(data_) << " SIZE=" << size_ << std::endl;
+#endif
   }
 
   profile_buffer(uint8_t* data, size_t size, size_t valid_size)
    : data_(data), size_(size), valid_size_(valid_size) {
+#if 0
     std::cerr << "PROFILER: ACQUIRING BUFFER at " << static_cast<void*>(data_)
       << " SIZE=" << size_
       << " VALID=" << valid_size_ << std::endl;
+#endif
   }
 
   void release(uint8_t** data_ptr_ptr, size_t* size_ptr) {
+#if 0
     std::cerr << "PROFILER: RELEASING BUFFER at " << static_cast<void*>(data_) << " SIZE=" << size_ << std::endl;
+#endif
     *data_ptr_ptr = data_;
     *size_ptr = size_;
     data_ = nullptr;
@@ -116,7 +122,9 @@ struct profile_buffer {
   }
 
   ~profile_buffer() {
+#if 0
     std::cerr << "PROFILER: FREEING BUFFER at " << static_cast<void*>(data_) << " SIZE=" << size_ << std::endl;
+#endif
     free(data_);
     data_ = nullptr;
     size_ = 0;
@@ -189,7 +197,9 @@ struct free_buffer_tracker {
     if (buffers_.size() < NUM_CACHED_BUFFERS) {
       buffers_.push(std::move(buffer));
     } else {
+#if 0
       std::cerr << "PROFILER: FREEING A BUFFER" << std::endl;
+#endif
       buffer.reset(nullptr);
     }
   }
@@ -551,7 +561,9 @@ void print_buffer(uint8_t* buffer, size_t valid_size)
 void CUPTIAPI buffer_requested_callback(uint8_t** buffer_ptr_ptr, size_t* size_ptr,
     size_t* max_num_records_ptr)
 {
+#if 0
   std::cerr << "PROFILER: BUFFER REQUEST CALLBACK" << std::endl;
+#endif
   *max_num_records_ptr = 0;
   auto buffer = State->free_buffers.get();
   buffer->release(buffer_ptr_ptr, size_ptr);
@@ -560,7 +572,9 @@ void CUPTIAPI buffer_requested_callback(uint8_t** buffer_ptr_ptr, size_t* size_p
 void CUPTIAPI buffer_completed_callback(CUcontext, uint32_t,
     uint8_t* buffer, size_t buffer_size, size_t valid_size)
 {
+#if 0
   std::cerr << "PROFILER: BUFFER COMPLETED CALLBACK" << std::endl;
+#endif
   State->completed_buffers.put(std::make_unique<profile_buffer>(buffer, buffer_size, valid_size));
 }
 
@@ -618,7 +632,9 @@ void write_current_fb()
 {
   auto fb_size = State->fb_builder.GetSize();
   if (fb_size > 0) {
+#if 0
     std::cerr << "PROFILER: sending " << fb_size << " bytes to writer" << std::endl;
+#endif
     auto fb = State->fb_builder.GetBufferPointer();
     auto env = State->writer_env;
     auto bytebuf_obj = env->NewDirectByteBuffer(fb, fb_size);
@@ -926,7 +942,18 @@ void process_api_activity(CUpti_ActivityAPI const* r)
   auto api_kind = spark_rapids_jni::profiler::ApiKind_Runtime;
   if (r->kind == CUPTI_ACTIVITY_KIND_DRIVER) {
     api_kind = spark_rapids_jni::profiler::ApiKind_Driver;
-  } else if (r->kind != CUPTI_ACTIVITY_KIND_RUNTIME) {
+  } else if (r->kind == CUPTI_ACTIVITY_KIND_RUNTIME) {
+    // skip some very common and uninteresting APIs to reduce the profile size
+    switch (r->cbid) {
+      case CUPTI_RUNTIME_TRACE_CBID_cudaGetDevice_v3020:
+      case CUPTI_RUNTIME_TRACE_CBID_cudaGetLastError_v3020:
+      case CUPTI_RUNTIME_TRACE_CBID_cudaPeekAtLastError_v3020:
+      case CUPTI_RUNTIME_TRACE_CBID_cudaDeviceGetAttribute_v5000:
+        return;
+      default:
+        break;
+    }
+  } else {
     std::cerr << "PROFILER: IGNORING API ACTIVITY RECORD KIND=" << activity_kind_to_string(r->kind) << std::endl;
     return;
   }
