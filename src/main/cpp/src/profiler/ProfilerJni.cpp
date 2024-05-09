@@ -157,9 +157,11 @@ struct completed_buffer_queue {
 
   void put(std::unique_ptr<profile_buffer>&& buffer) {
     std::unique_lock lock(lock_);
-    buffers_.push(std::move(buffer));
-    lock.unlock();
-    cv_.notify_one();
+    if (!shutdown_) {
+      buffers_.push(std::move(buffer));
+      lock.unlock();
+      cv_.notify_one();
+    }
   }
 
   void shutdown() {
@@ -217,6 +219,7 @@ struct subscriber_state {
   JNIEnv* writer_env;
   CUpti_SubscriberHandle subscriber_handle;
   bool has_cupti_callback_errored;
+  bool is_shutdown;
   // TODO: Move serializer to its own class and file
   jobject j_writer;
   flatbuffers::FlatBufferBuilder fb_builder;
@@ -236,7 +239,8 @@ struct subscriber_state {
 
   subscriber_state(JNIEnv* env, jobject writer, size_t buffer_size)
     : writer_env(nullptr), j_writer(nullptr), has_cupti_callback_errored(false),
-      fb_builder(buffer_size), free_buffers(buffer_size), flush_threshold(buffer_size) {}
+      fb_builder(buffer_size), free_buffers(buffer_size), flush_threshold(buffer_size),
+      is_shutdown(false) {}
 };
 
 
@@ -565,8 +569,13 @@ void CUPTIAPI buffer_requested_callback(uint8_t** buffer_ptr_ptr, size_t* size_p
   std::cerr << "PROFILER: BUFFER REQUEST CALLBACK" << std::endl;
 #endif
   *max_num_records_ptr = 0;
-  auto buffer = State->free_buffers.get();
-  buffer->release(buffer_ptr_ptr, size_ptr);
+  if (!State->is_shutdown) {
+    auto buffer = State->free_buffers.get();
+    buffer->release(buffer_ptr_ptr, size_ptr);
+  } else {
+    *buffer_ptr_ptr = nullptr;
+    *size_ptr = 0;
+  }
 }
 
 void CUPTIAPI buffer_completed_callback(CUcontext, uint32_t,
@@ -575,7 +584,10 @@ void CUPTIAPI buffer_completed_callback(CUcontext, uint32_t,
 #if 0
   std::cerr << "PROFILER: BUFFER COMPLETED CALLBACK" << std::endl;
 #endif
-  State->completed_buffers.put(std::make_unique<profile_buffer>(buffer, buffer_size, valid_size));
+  auto pb = std::make_unique<profile_buffer>(buffer, buffer_size, valid_size);
+  if (!State->is_shutdown) {
+    State->completed_buffers.put(std::move(pb));
+  }
 }
 
 void cache_writer_callback_method(JNIEnv* env)
@@ -631,7 +643,7 @@ void clear_fbb()
 void write_current_fb()
 {
   auto fb_size = State->fb_builder.GetSize();
-  if (fb_size > 0) {
+  if (!State->is_shutdown && fb_size > 0) {
 #if 0
     std::cerr << "PROFILER: sending " << fb_size << " bytes to writer" << std::endl;
 #endif
@@ -1258,6 +1270,36 @@ void writer_thread_process(JavaVM* vm)
   std::cerr << "PROFILER: WRITER THREAD COMPLETED" << std::endl;
 }
 
+void update_activity_enable(bool enable)
+{
+  if (enable) {
+    //check_cupti(cuptiEnableDomain(1, State->subscriber_handle, CUPTI_CB_DOMAIN_NVTX), "Error enabling NVTX domain");
+    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_DEVICE), "Error enabling device activity");
+    //check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONTEXT), "Error enabling context activity");
+    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_DRIVER), "Error enabling driver activity");
+    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_RUNTIME), "Error enabling runtime activity");
+    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY), "Error enabling memcpy activity");
+    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMSET), "Error enabling memset activity");
+    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_NAME), "Error enabling name activity");
+    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MARKER), "Error enabling marker activity");
+    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL), "Error enabling concurrent kernel activity");
+    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_OVERHEAD), "Error enabling overhead activity");
+  } else {
+    //check_cupti(cuptiEnableDomain(0, State->subscriber_handle, CUPTI_CB_DOMAIN_NVTX), "Error enabling NVTX domain");
+    check_cupti(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_DEVICE), "Error enabling device activity");
+    //check_cupti(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_CONTEXT), "Error enabling context activity");
+    check_cupti(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_DRIVER), "Error enabling driver activity");
+    check_cupti(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_RUNTIME), "Error enabling runtime activity");
+    check_cupti(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_MEMCPY), "Error enabling memcpy activity");
+    check_cupti(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_MEMSET), "Error enabling memset activity");
+    check_cupti(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_NAME), "Error enabling name activity");
+    check_cupti(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_MARKER), "Error enabling marker activity");
+    check_cupti(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL), "Error enabling concurrent kernel activity");
+    check_cupti(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_OVERHEAD), "Error enabling overhead activity");
+    check_cupti(cuptiActivityFlushAll(0), "Error flushing activity records");
+  }
+}
+
 }
 
 extern "C" {
@@ -1312,18 +1354,26 @@ JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeInit(JNIE
 //    check_cupti(rc, "Error enabling warning callback");
     rc = cuptiActivityRegisterCallbacks(buffer_requested_callback, buffer_completed_callback);
     check_cupti(rc, "Error registering activity buffer callbacks");
+  }
+  CATCH_STD(env, );
+}
 
-    //check_cupti(cuptiEnableDomain(1, State->subscriber_handle, CUPTI_CB_DOMAIN_NVTX), "Error enabling NVTX domain");
-    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_DEVICE), "Error enabling device activity");
-    //check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONTEXT), "Error enabling context activity");
-    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_DRIVER), "Error enabling driver activity");
-    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_RUNTIME), "Error enabling runtime activity");
-    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY), "Error enabling memcpy activity");
-    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMSET), "Error enabling memset activity");
-    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_NAME), "Error enabling name activity");
-    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MARKER), "Error enabling marker activity");
-    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL), "Error enabling concurrent kernel activity");
-    check_cupti(cuptiActivityEnable(CUPTI_ACTIVITY_KIND_OVERHEAD), "Error enabling overhead activity");
+JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeStart(JNIEnv* env, jclass)
+{
+  try {
+    if (State && !State->is_shutdown) {
+      update_activity_enable(true);
+    }
+  }
+  CATCH_STD(env, );
+}
+
+JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeStop(JNIEnv* env, jclass)
+{
+  try {
+    if (State && !State->is_shutdown) {
+      update_activity_enable(false);
+    }
   }
   CATCH_STD(env, );
 }
@@ -1331,15 +1381,16 @@ JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeInit(JNIE
 JNIEXPORT void JNICALL Java_com_nvidia_spark_rapids_jni_Profiler_nativeShutdown(JNIEnv* env, jclass)
 {
   try {
-    if (State != nullptr) {
+    if (State && !State->is_shutdown) {
       auto unsub_rc = cuptiUnsubscribe(State->subscriber_handle);
       auto flush_rc = cuptiActivityFlushAll(1);
       State->completed_buffers.shutdown();
       State->writer_thread.join();
-      env->DeleteGlobalRef(State->j_writer);
-      delete State;
-      State = nullptr;
-      free_writer_callback_cache(env);
+      State->is_shutdown = true;
+      //env->DeleteGlobalRef(State->j_writer);
+      //delete State;
+      //State = nullptr;
+      //free_writer_callback_cache(env);
       check_cupti(unsub_rc, "Error unsubscribing from CUPTI");
       check_cupti(flush_rc, "Error flushing CUPTI records");
     }
