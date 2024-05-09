@@ -61,8 +61,28 @@ public class Profiler {
     }
   }
 
+  public static void start() {
+    if (writer != null) {
+      nativeStart();
+    } else {
+      throw new IllegalStateException("Profiler not initialized");
+    }
+  }
+
+  public static void stop() {
+    if (writer != null) {
+      nativeStop();
+    } else {
+      throw new IllegalStateException("Profiler not initialized");
+    }
+  }
+
   private static native void nativeInit(String libPath, DataWriter writer,
                                         long writeBufferSize, int flushPeriodMillis);
+
+  private static native void nativeStart();
+
+  private static native void nativeStop();
 
   private static native void nativeShutdown();
 
