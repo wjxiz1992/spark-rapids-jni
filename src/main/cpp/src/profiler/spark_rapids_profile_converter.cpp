@@ -436,6 +436,125 @@ std::string demangle(char const* s)
   }
 }
 
+std::string memcpy_to_string(spark_rapids_jni::profiler::MemcpyActivity const* m)
+{
+  char const* kind_str;
+  char const* pinned = "";
+  switch (m->copy_kind()) {
+    case spark_rapids_jni::profiler::MemcpyKind_HtoD:
+      kind_str = "HtoD";
+      if (m->src_kind() == spark_rapids_jni::profiler::MemoryKind_Pinned) {
+        pinned = " Pinned";
+      }
+      break;
+    case spark_rapids_jni::profiler::MemcpyKind_DtoH:
+      kind_str = "DtoH";
+      if (m->dst_kind() == spark_rapids_jni::profiler::MemoryKind_Pinned) {
+        pinned = " Pinned";
+      }
+      break;
+    case spark_rapids_jni::profiler::MemcpyKind_HtoA:
+      kind_str = "HtoA";
+      if (m->dst_kind() == spark_rapids_jni::profiler::MemoryKind_Pinned) {
+        pinned = " Pinned";
+      }
+      break;
+    case spark_rapids_jni::profiler::MemcpyKind_AtoH:
+      kind_str = "AtoH";
+      if (m->dst_kind() == spark_rapids_jni::profiler::MemoryKind_Pinned) {
+        pinned = " Pinned";
+      }
+      break;
+    case spark_rapids_jni::profiler::MemcpyKind_AtoA:
+      kind_str = "AtoA";
+      break;
+    case spark_rapids_jni::profiler::MemcpyKind_AtoD:
+      kind_str = "AtoD";
+      break;
+    case spark_rapids_jni::profiler::MemcpyKind_DtoA:
+      kind_str = "DtoA";
+      break;
+    case spark_rapids_jni::profiler::MemcpyKind_DtoD:
+      kind_str = "DtoD";
+      break;
+    case spark_rapids_jni::profiler::MemcpyKind_HtoH:
+      kind_str = "HtoH";
+      if (m->src_kind() == spark_rapids_jni::profiler::MemoryKind_Pinned && m->dst_kind() == m->src_kind()) {
+        pinned = " Pinned";
+      }
+      break;
+    case spark_rapids_jni::profiler::MemcpyKind_PtoP:
+      kind_str = "PtoP";
+      break;
+    case spark_rapids_jni::profiler::MemcpyKind_Unknown:
+      kind_str = "Unknown";
+      break;
+    default:
+      kind_str = "Unknown";
+      break;
+  }
+  std::ostringstream oss;
+  oss << kind_str << pinned;
+  oss << " " << m->bytes() << " bytes";
+  if (m->flags() == spark_rapids_jni::profiler::MemcpyFlags_Async) {
+    oss << " async";
+  }
+  return oss.str();
+}
+
+const char* memcpy_to_color(spark_rapids_jni::profiler::MemcpyActivity const* m)
+{
+  switch (m->copy_kind()) {
+    case spark_rapids_jni::profiler::MemcpyKind_HtoD:
+      if (m->src_kind() == spark_rapids_jni::profiler::MemoryKind_Pinned) {
+        return "MediumPurple";
+      }
+      return "Gold";
+    case spark_rapids_jni::profiler::MemcpyKind_DtoH:
+      if (m->dst_kind() == spark_rapids_jni::profiler::MemoryKind_Pinned) {
+        return "MediumPurple";
+      }
+      return "Gold";
+    case spark_rapids_jni::profiler::MemcpyKind_HtoA:
+    case spark_rapids_jni::profiler::MemcpyKind_AtoH:
+    case spark_rapids_jni::profiler::MemcpyKind_AtoA:
+    case spark_rapids_jni::profiler::MemcpyKind_AtoD:
+    case spark_rapids_jni::profiler::MemcpyKind_DtoA:
+      return "Gold";
+    case spark_rapids_jni::profiler::MemcpyKind_DtoD:
+      return "Gold";
+    case spark_rapids_jni::profiler::MemcpyKind_HtoH:
+      return "Ivory";
+    case spark_rapids_jni::profiler::MemcpyKind_PtoP:
+      return "LightSalmon";
+    case spark_rapids_jni::profiler::MemcpyKind_Unknown:
+    default:
+      return "DarkRed";
+  }
+}
+
+std::string memset_to_string(spark_rapids_jni::profiler::MemsetActivity const* m)
+{
+  std::ostringstream oss;
+  oss << "Memset " << m->bytes() << " bytes to " << m->value();
+  if (m->flags() == spark_rapids_jni::profiler::MemsetFlags_Async) {
+    oss << " async";
+  }
+  return oss.str();
+}
+
+char const* overhead_kind_to_string(spark_rapids_jni::profiler::OverheadKind k)
+{
+  switch (k) {
+    case spark_rapids_jni::profiler::OverheadKind_Unknown: return "Unknown";
+    case spark_rapids_jni::profiler::OverheadKind_DriverCompiler: return "Driver compiler";
+    case spark_rapids_jni::profiler::OverheadKind_CUptiBufferFlush: return "Buffer flush";
+    case spark_rapids_jni::profiler::OverheadKind_CUptiInstrumentation: return "Instrumentation";
+    case spark_rapids_jni::profiler::OverheadKind_CUptiResource: return "Resource";
+    default: return "Unknown";
+  }
+}
+
 void convert_to_nvtxt(std::ifstream& in, std::ostream& out, program_options const& opts)
 {
   struct marker_start {
@@ -567,6 +686,77 @@ void convert_to_nvtxt(std::ifstream& in, std::ostream& out, program_options cons
           << std::endl;
         out << "RangePop," << k->end()
           << "," << process_id << "," << (thread_id & 0xffffff) << std::endl;
+      }
+    }
+    auto memcpy = records->memcpy();
+    if (memcpy != nullptr) {
+      for (int i = 0; i < memcpy->size(); ++i) {
+        auto m = memcpy->Get(i);
+        uint32_t process_id = 0;
+        // abusing thread ID as stream ID since NVTXT does not support GPU activity directly
+        uint32_t thread_id = m->stream_id();
+        // TODO: Ignoring device ID and context here
+        auto [it, inserted] = streams_seen.insert(stream_id{0, 0, thread_id});
+        if (inserted) {
+          out << "NameOsThread,0," << thread_id << ",\"Stream " << thread_id << "\"" << std::endl;
+        }
+        out << "RangePush," << m->start()
+          << "," << process_id << "," << (thread_id & 0xffffff)
+          << ",0," << memcpy_to_color(m)
+          << "," << "\"" << memcpy_to_string(m) << "\""
+          << std::endl;
+        out << "RangePop," << m->end()
+          << "," << process_id << "," << (thread_id & 0xffffff) << std::endl;
+      }
+    }
+    auto memset = records->memset();
+    if (memset != nullptr) {
+      for (int i = 0; i < memset->size(); ++i) {
+        auto m = memset->Get(i);
+        uint32_t process_id = 0;
+        // abusing thread ID as stream ID since NVTXT does not support GPU activity directly
+        uint32_t thread_id = m->stream_id();
+        // TODO: Ignoring device ID and context here
+        auto [it, inserted] = streams_seen.insert(stream_id{0, 0, thread_id});
+        if (inserted) {
+          out << "NameOsThread,0," << thread_id << ",\"Stream " << thread_id << "\"" << std::endl;
+        }
+        out << "RangePush," << m->start()
+          << "," << process_id << "," << (thread_id & 0xffffff)
+          << ",0,Olive"
+          << "," << "\"" << memset_to_string(m) << "\""
+          << std::endl;
+        out << "RangePop," << m->end()
+          << "," << process_id << "," << (thread_id & 0xffffff) << std::endl;
+      }
+    }
+    auto overhead = records->overhead();
+    if (overhead != nullptr) {
+      for (int i = 0; i < overhead->size(); ++i) {
+        auto o = overhead->Get(i);
+        auto object_id = o->object_id();
+        if (object_id != nullptr) {
+          uint32_t process_id = object_id->process_id();
+          uint32_t thread_id = object_id->thread_id();
+          if (process_id == 0) {
+            // abusing thread ID as stream ID since NVTXT does not support GPU activity directly
+            thread_id = object_id->stream_id();
+            // TODO: Ignoring device ID and context here
+            auto [it, inserted] = streams_seen.insert(stream_id{0, 0, thread_id});
+            if (inserted) {
+              out << "NameOsThread,0,\"Stream " << thread_id << "\"" << std::endl;
+            }
+          }
+          out << "RangePush," << o->start()
+            << "," << process_id << "," << (thread_id & 0xffffff)
+            << ",0,OrangeRed"
+            << "," << "\"" << overhead_kind_to_string(o->overhead_kind()) << "\""
+            << std::endl;
+          out << "RangePop," << o->end()
+            << "," << process_id << "," << (thread_id & 0xffffff) << std::endl;
+        } else {
+          std::cerr << "Overhead activity has no object ID" << std::endl;
+        }
       }
     }
 #if 0
