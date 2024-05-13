@@ -368,11 +368,17 @@ add_executable(spark_rapids_profile_converter
 target_include_directories(
   spark_rapids_profile_converter
   PRIVATE
+  "${CUDAToolkit_INCLUDE_DIRS}"
   "${SPARK_RAPIDS_JNI_SOURCE_DIR}/src"
   "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}"
 )
 
-target_link_libraries(spark_rapids_profile_converter "${FLATBUFFERS_LIB}")
+target_link_libraries(spark_rapids_profile_converter
+  "${FLATBUFFERS_LIB}"
+  "${CUPTI_LIBRARY_PATH}"
+  dl
+  pthread
+  rt)
 
 # ##################################################################################################
 # * add tests -------------------------------------------------------------------------------------
