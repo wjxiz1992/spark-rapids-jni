@@ -26,9 +26,11 @@
 #include "profiler_generated.h"
 #include "spark_rapids_jni_version.h"
 
+#include <cupti.h>
 #include <flatbuffers/idl.h>
 
 #include <cerrno>
+#include <cxxabi.h>
 #include <charconv>
 #include <filesystem>
 #include <fstream>
@@ -37,6 +39,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace spark_rapids_jni::profiler {
@@ -47,6 +50,7 @@ struct program_options {
   std::optional<std::filesystem::path> output_path;
   bool help = false;
   bool json = false;
+  bool nvtxt = false;
   int  json_indent = 2;
   bool version = false;
 };
@@ -115,6 +119,7 @@ Converts the spark-rapids profile in profile.bin into other forms.
   -j, --json                convert to JSON, default output is stdout
   -i, --json-indent=INDENT  indentation to use for JSON. 0 is no indent, less than 0 also removes newlines
   -o, --output=PATH         use PATH as the output filename
+  -t. --nvtxt               convert to NVTXT, default output is stdout
   -V, --version             print the version number
   )"
     << std::endl;
@@ -159,9 +164,6 @@ parse_options(std::vector<std::string_view> args)
     } else if (*argp == "-h" || *argp == "--help") {
       opts.help = true;
       ++argp;
-    } else if (*argp == "-j" || *argp == "--json") {
-      opts.json = true;
-      ++argp;
     } else if (*argp == "-i" || *argp == "--json-indent") {
       if (seen_json_indent) {
         throw std::runtime_error("JSON indent cannot be specified twice");
@@ -191,6 +193,18 @@ parse_options(std::vector<std::string_view> args)
         }
         ++argp;
       }
+    } else if (*argp == "-j" || *argp == "--json") {
+      if (opts.nvtxt) {
+        throw std::runtime_error("JSON and NVTXT output are mutually exclusive");
+      }
+      opts.json = true;
+      ++argp;
+    } else if (*argp == "-t" || *argp == "--nvtxt") {
+      if (opts.json) {
+        throw std::runtime_error("JSON and NVTXT output are mutually exclusive");
+      }
+      opts.nvtxt = true;
+      ++argp;
     } else if (*argp == "-V" || *argp == "--version") {
       opts.version = true;
       ++argp;
@@ -254,7 +268,7 @@ T const* validate_fb(std::vector<char> const& fb, std::string_view const& name)
   flatbuffers::Verifier::Options verifier_opts;
   verifier_opts.assert = true;
   flatbuffers::Verifier verifier(reinterpret_cast<uint8_t const*>(fb.data()), fb.size(), verifier_opts);
-  if (!verifier.VerifySizePrefixedBuffer<T>(nullptr)) {
+  if (not verifier.VerifySizePrefixedBuffer<T>(nullptr)) {
     throw std::runtime_error(std::string("malformed ") + std::string(name) + " record");
   }
   return flatbuffers::GetSizePrefixedRoot<T>(fb.data());
@@ -355,7 +369,7 @@ void convert_to_nsys_rep(std::ifstream& in, std::string_view const& in_filename,
 
     in.peek();
   }
-  if (!in.eof()) {
+  if (not in.eof()) {
     throw std::runtime_error(std::strerror(errno));
   }
   if (num_dropped_records) {
@@ -384,8 +398,272 @@ void convert_to_json(std::ifstream& in, std::ostream& out, program_options const
 
     in.peek();
   }
-  if (!in.eof()) {
+  if (not in.eof()) {
     throw std::runtime_error(std::strerror(errno));
+  }
+}
+
+char const* get_api_name(spark_rapids_jni::profiler::ApiActivity const* a)
+{
+  char const* name = nullptr;
+  switch (a->kind()) {
+    case spark_rapids_jni::profiler::ApiKind_Driver:
+      cuptiGetCallbackName(CUPTI_CB_DOMAIN_DRIVER_API, a->cbid(), &name);
+      break;
+    case spark_rapids_jni::profiler::ApiKind_Runtime:
+      cuptiGetCallbackName(CUPTI_CB_DOMAIN_RUNTIME_API, a->cbid(), &name);
+      break;
+    default:
+    {
+      std::ostringstream oss;
+      oss << "unsupported API kind: " << a->kind();
+      throw std::runtime_error(oss.str());
+    }
+  }
+  return name;
+}
+
+std::string demangle(char const* s)
+{
+  int status = 0;
+  char* demangled = abi::__cxa_demangle(s, nullptr, nullptr, &status);
+  if (status == 0) {
+    std::string result(demangled);
+    free(demangled);
+    return result;
+  } else {
+    return s;
+  }
+}
+
+void convert_to_nvtxt(std::ifstream& in, std::ostream& out, program_options const& opts)
+{
+  struct marker_start {
+    uint64_t timestamp;
+    uint32_t process_id;
+    uint32_t thread_id;
+    uint32_t color;
+    uint32_t category;
+    std::string name;
+  };
+  std::unordered_set<stream_id> streams_seen;
+  std::unordered_map<int, spark_rapids_jni::profiler::MarkerData const*> marker_data_map;
+  std::unordered_map<int, marker_start> marker_start_map;
+  size_t num_dropped_records = 0;
+  out << "@NameProcess,ProcessId,Name" << std::endl;
+  out << "NameProcess,0,\"GPU\"" << std::endl;
+  out << "@NameOsThread,ProcessId,ThreadId,Name" << std::endl;
+  out << "@RangePush,Time,ProcessId,ThreadId,CategoryId,Color,Message" << std::endl;
+  out << "@RangePop,Time,ProcessId,ThreadId" << std::endl;
+  out << "TimeBase=Relative" << std::endl;
+  out << "Payload=0" << std::endl;
+  while (!in.eof()) {
+    auto fb_ptr = read_flatbuffer(in);
+    auto records = validate_fb<spark_rapids_jni::profiler::ActivityRecords>(*fb_ptr, "ActivityRecords");
+    auto dropped = records->dropped();
+    if (dropped != nullptr) {
+      for (int i = 0; i < dropped->size(); ++i) {
+        auto d = dropped->Get(i);
+        num_dropped_records += d->num_dropped();
+      }
+    }
+    auto api = records->api();
+    if (api != nullptr) {
+      for (int i = 0; i < api->size(); ++i) {
+        auto a = api->Get(i);
+        out << "RangePush," << a->start()
+          << "," << a->process_id() << "," << (a->thread_id() & 0xffffff)
+          << ",0,PaleGreen"
+          << "," << "\"" << get_api_name(a) << "\""
+          << std::endl;
+        out << "RangePop," << a->end()
+          << "," << a->process_id() << "," << (a->thread_id() & 0xffffff) << std::endl;
+      }
+    }
+    auto marker_data = records->marker_data();
+    if (marker_data != nullptr) {
+      for (int i = 0; i < marker_data->size(); ++i) {
+        auto m = marker_data->Get(i);
+        auto [it, inserted] = marker_data_map.insert({m->id(), m});
+        if (not inserted) {
+          std::ostringstream oss;
+          oss << "duplicate marker data for " << m->id();
+          throw std::runtime_error(oss.str());
+        }
+      }
+    }
+    auto marker = records->marker();
+    if (marker != nullptr) {
+      for (int i = 0; i < marker->size(); ++i) {
+        auto m = marker->Get(i);
+        auto object_id = m->object_id();
+        if (object_id != nullptr) {
+          uint32_t process_id = object_id->process_id();
+          uint32_t thread_id = object_id->thread_id();
+          if (process_id == 0) {
+            // abusing thread ID as stream ID since NVTXT does not support GPU activity directly
+            thread_id = object_id->stream_id();
+            // TODO: Ignoring device ID and context here
+            auto [it, inserted] = streams_seen.insert(stream_id{0, 0, thread_id});
+            if (inserted) {
+              out << "NameOsThread,0,\"Stream " << thread_id << "\"" << std::endl;
+            }
+          }
+          if (m->flags() & spark_rapids_jni::profiler::MarkerFlags_Start) {
+            auto it = marker_data_map.find(m->id());
+            uint32_t color = 0x444444;
+            uint32_t category = 0;
+            if (it != marker_data_map.end()) {
+              color = it->second->color();
+              category = it->second->category();
+            }
+            marker_start ms{m->timestamp(), process_id, thread_id, color, category, m->name()->str()};
+            auto [ignored, inserted] = marker_start_map.insert({m->id(), ms});
+            if (not inserted) {
+              std::ostringstream oss;
+              oss << "duplicate marker start for ID " << m->id();
+              throw std::runtime_error(oss.str());
+            }
+          } else if (m->flags() & spark_rapids_jni::profiler::MarkerFlags_End) {
+            auto it = marker_start_map.find(m->id());
+            if (it != marker_start_map.end()) {
+              auto const& ms = it->second;
+              out << "RangePush," << ms.timestamp
+                << "," << ms.process_id << "," << (ms.thread_id & 0xffffff)
+                << "," << ms.category << "," << ms.color
+                << "," << "\"" << ms.name << "\""
+                << std::endl;
+              out << "RangePop," << m->timestamp()
+                << "," << ms.process_id << "," << (ms.thread_id & 0xffffff) << std::endl;
+              marker_start_map.erase(it);
+            } else {
+              std::cerr << "Ignoring marker end without start for ID " << m->id() << std::endl;
+            }
+          } else {
+            std::cerr << "Ignoring marker with unsupported flags: " << m->flags() << std::endl;
+          }
+        } else {
+          std::cerr << "Marker " << m->id() << " has no object ID" << std::endl;
+        }
+      }
+    }
+    marker_data_map.clear();
+    auto kernel = records->kernel();
+    if (kernel != nullptr) {
+      for (int i = 0; i < kernel->size(); ++i) {
+        auto k = kernel->Get(i);
+        uint32_t process_id = 0;
+        // abusing thread ID as stream ID since NVTXT does not support GPU activity directly
+        uint32_t thread_id = k->stream_id();
+        // TODO: Ignoring device ID and context here
+        auto [it, inserted] = streams_seen.insert(stream_id{0, 0, thread_id});
+        if (inserted) {
+          out << "NameOsThread,0," << thread_id << ",\"Stream " << thread_id << "\"" << std::endl;
+        }
+        out << "RangePush," << k->start()
+          << "," << process_id << "," << (thread_id & 0xffffff)
+          << ",0,Blue"
+          << "," << "\"" << demangle(k->name()->c_str()) << "\""
+          << std::endl;
+        out << "RangePop," << k->end()
+          << "," << process_id << "," << (thread_id & 0xffffff) << std::endl;
+      }
+    }
+#if 0
+    auto api = records->api();
+    if (api != nullptr) {
+      for (int i = 0; i < api->size(); ++i) {
+        auto a = api->Get(i);
+        thread_id tid{a->process_id(), a->thread_id()};
+        event e{event::type_id::API, a};
+        auto it = events.cpu.find(tid);
+        if (it == events.cpu.end()) {
+          events.cpu.emplace(tid, std::initializer_list<event>{e});
+        } else {
+          it->second.push_back(e);
+        }
+      }
+    }
+    auto device = records->device();
+    if (device != nullptr) {
+      // TODO: How to map device records to device IDs?
+    }
+    auto dropped = records->dropped();
+    if (dropped != nullptr) {
+      for (int i = 0; i < dropped->size(); ++i) {
+        auto d = dropped->Get(i);
+        num_dropped_records += d->num_dropped();
+      }
+    }
+    auto kernel = records->kernel();
+    if (kernel != nullptr) {
+      for (int i = 0; i < kernel->size(); ++i) {
+        auto k = kernel->Get(i);
+        stream_id sid{k->device_id(), k->context_id(), k->stream_id()};
+        event e{event::type_id::KERNEL, k};
+        auto it = events.gpu.find(sid);
+        if (it == events.gpu.end()) {
+          events.gpu.emplace(sid, std::initializer_list<event>{e});
+        } else {
+          it->second.push_back(e);
+        }
+      }
+    }
+    auto marker = records->marker();
+    if (marker != nullptr) {
+      for (int i = 0; i < marker->size(); ++i) {
+        auto m = marker->Get(i);
+        event e{event:type_id::MARKER, m};
+        if (m->process_id() != 0) {
+          thread_id tid{a->process_id(), a->thread_id()};
+          auto it = events.cpu.find(tid);
+          if (it == events.cpu.end()) {
+            events.cpu.emplace(tid, std::initializer_list<event>{e});
+          } else {
+            it->second.push_back(e);
+          }
+        } else {
+          stream_id sid{k->device_id(), k->context_id(), k->stream_id()};
+          auto it = events.gpu.find(sid);
+          if (it == events.gpu.end()) {
+            events.gpu.emplace(sid, std::initializer_list<event>{e});
+          } else {
+            it->second.push_back(e);
+          }
+        }
+      }
+    }
+    auto marker_data = records->marker_data();
+    if (marker_data != nullptr) {
+      for (int i = 0; i < marker_data->size(); ++i) {
+        auto m = marker_data->Get(i);
+        event e{event:type_id::MARKER_DATA, m};
+        if (m->process_id() != 0) {
+          thread_id tid{a->process_id(), a->thread_id()};
+          auto it = events.cpu.find(tid);
+          if (it == events.cpu.end()) {
+            events.cpu.emplace(tid, std::initializer_list<event>{e});
+          } else {
+            it->second.push_back(e);
+          }
+        } else {
+          stream_id sid{k->device_id(), k->context_id(), k->stream_id()};
+          auto it = events.gpu.find(sid);
+          if (it == events.gpu.end()) {
+            events.gpu.emplace(sid, std::initializer_list<event>{e});
+          } else {
+            it->second.push_back(e);
+          }
+        }
+      }
+    }
+#endif
+
+    in.peek();
+  }
+  if (num_dropped_records) {
+    std::cerr << "Warning: " << num_dropped_records
+      << " records were noted as dropped in the profile" << std::endl;
   }
 }
 
@@ -434,6 +712,13 @@ int main(int argc, char* argv[])
         convert_to_json(in, out, opts);
       } else {
         convert_to_json(in, std::cout, opts);
+      }
+    } else if (opts.nvtxt) {
+      if (opts.output_path) {
+        std::ofstream out = open_output(opts.output_path.value());
+        convert_to_nvtxt(in, out, opts);
+      } else {
+        convert_to_nvtxt(in, std::cout, opts);
       }
     } else {
       convert_to_nsys_rep(in, input_file, opts);
