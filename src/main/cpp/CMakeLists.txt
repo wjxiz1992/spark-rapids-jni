@@ -302,89 +302,6 @@ if(USE_GDS)
 endif()
 
 # ##################################################################################################
-# * flatbuffer generation---------------------------------------------------------------------------
-
-set(SPARK_RAPIDS_JNI_FBS_DIR "${SPARK_RAPIDS_JNI_SOURCE_DIR}/../fbs")
-add_custom_command(
-  OUTPUT ${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/profiler_generated.h
-  DEPENDS "${SPARK_RAPIDS_JNI_FBS_DIR}/profiler.fbs"
-  WORKING_DIRECTORY "${SPARK_RAPIDS_JNI_FBS_DIR}"
-  VERBATIM
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}"
-  COMMAND
-    flatc --cpp -o "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}" profiler.fbs
-  COMMENT "Generating profiler flatbuffer code"
-)
-
-# ##################################################################################################
-# * profiler JNI -----------------------------------------------------------------------------------
-
-add_library(profilerjni SHARED
-  src/profiler/ProfilerJni.cpp
-  "${SPARK_RAPIDS_JNI_GENERATED_SOURCE_DIR}/spark_rapids_jni_version.cpp"
-  "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/profiler_generated.h"
-)
-
-set_target_properties(
-  profilerjni
-  PROPERTIES BUILD_RPATH "\$ORIGIN"
-             INSTALL_RPATH "\$ORIGIN"
-             # set target compile options
-             CXX_STANDARD 17
-             CXX_STANDARD_REQUIRED ON
-             CXX_VISIBILITY_PRESET "hidden"
-             VISIBILITY_INLINES_HIDDEN TRUE
-)
-
-target_include_directories(
-  profilerjni
-  PRIVATE "${JNI_INCLUDE_DIRS}"
-          "${CUDAToolkit_INCLUDE_DIRS}"
-          "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}"
-          "${SPARK_RAPIDS_JNI_SOURCE_DIR}/src"
-)
-
-find_library(CUPTI_LIBRARY_PATH cupti_static PATHS
-  "/usr/local/cuda/lib64"
-  "/usr/local/cuda/extras/CUPTI/lib64"
-)
-
-target_link_libraries(profilerjni
-  PRIVATE ${CUPTI_LIBRARY_PATH} nvtx3-cpp
-)
-
-file(READ "${SPARK_RAPIDS_JNI_FBS_DIR}/profiler.fbs" SPARK_RAPIDS_JNI_PROFILER_SCHEMA)
-configure_file(
-  src/profiler/profiler_schema.cpp.in
-  "${SPARK_RAPIDS_JNI_GENERATED_SOURCE_DIR}/profiler_schema.cpp"
-  @ONLY
-)
-
-find_library(FLATBUFFERS_LIB flatbuffers)
-
-add_executable(spark_rapids_profile_converter
-  src/profiler/spark_rapids_profile_converter.cpp
-  "${SPARK_RAPIDS_JNI_GENERATED_SOURCE_DIR}/profiler_schema.cpp"
-  "${SPARK_RAPIDS_JNI_GENERATED_SOURCE_DIR}/spark_rapids_jni_version.cpp"
-  "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}/profiler_generated.h"
-)
-
-target_include_directories(
-  spark_rapids_profile_converter
-  PRIVATE
-  "${CUDAToolkit_INCLUDE_DIRS}"
-  "${SPARK_RAPIDS_JNI_SOURCE_DIR}/src"
-  "${SPARK_RAPIDS_JNI_GENERATED_INCLUDE_DIR}"
-)
-
-target_link_libraries(spark_rapids_profile_converter
-  "${FLATBUFFERS_LIB}"
-  "${CUPTI_LIBRARY_PATH}"
-  dl
-  pthread
-  rt)
-
-# ##################################################################################################
 # * add tests -------------------------------------------------------------------------------------
 
 if(SPARK_RAPIDS_JNI_BUILD_TESTS)
@@ -406,3 +323,5 @@ endif()
 if(SPARK_RAPIDS_JNI_BUILD_FAULTINJ)
   add_subdirectory(faultinj)
 endif()
+
+add_subdirectory(profiler)

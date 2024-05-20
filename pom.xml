@@ -546,6 +546,11 @@
                     <include>libcudf.so</include>
                     <include>libcudfjni.so</include>
                     <include>libcufilejni.so</include>
+                  </includes>
+                </resource>
+                <resource>
+                  <directory>${native.build.path}/profiler</directory>
+                  <includes>
                     <include>libprofilerjni.so</include>
                   </includes>
                 </resource>
