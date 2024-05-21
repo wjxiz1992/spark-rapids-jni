@@ -408,3 +408,5 @@ endif()
 if(SPARK_RAPIDS_JNI_BUILD_FAULTINJ)
   add_subdirectory(faultinj)
 endif()
+
+add_subdirectory(profiler)
