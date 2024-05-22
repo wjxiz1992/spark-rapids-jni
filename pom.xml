@@ -555,6 +555,12 @@
                   </includes>
                 </resource>
                 <resource>
+                  <directory>${native.build.path}/profiler</directory>
+                  <includes>
+                    <include>libprofilerjni.so</include>
+                  </includes>
+                </resource>
+                <resource>
                   <directory>${libcudfjni.build.path}</directory>
                   <includes>
                     <include>libnvcomp.so</include>
