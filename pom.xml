@@ -112,6 +112,7 @@
     <submodule.check.skip>false</submodule.check.skip>
     <antrun.version>3.0.0</antrun.version>
     <hilbert.version>0.2.2</hilbert.version>
+    <apache.common.compress.version>1.26.2</apache.common.compress.version>
   </properties>
 
   <dependencies>
@@ -173,6 +174,16 @@
       <version>${slf4j.version}</version>
     </dependency>
     <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-compress</artifactId>
+      <version>${apache.common.compress.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.github.luben</groupId>
+      <artifactId>zstd-jni</artifactId>
+      <version>1.5.6-4</version> <!-- Use the latest version if available -->
+    </dependency>
+    <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-simple</artifactId>
       <version>${slf4j.version}</version>
@@ -182,6 +193,12 @@
       <groupId>com.github.davidmoten</groupId>
       <artifactId>hilbert-curve</artifactId>
       <version>${hilbert.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <version>3.26.3</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
