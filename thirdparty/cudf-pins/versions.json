@@ -44,9 +44,9 @@
     {
       "always_download" : true,
       "git_shallow" : false,
-      "git_tag" : "42e0d727e4044f7941a62e97d8f68fd14c24d02f",
+      "git_tag" : "adc3a8ef11dd0053f77a908db9db54fe7c92d5ff",
       "git_url" : "https://github.com/rapidsai/kvikio.git",
-      "version" : "24.10"
+      "version" : "24.12"
     },
     "bs_thread_pool" : 
     {
@@ -60,7 +60,7 @@
     {
       "always_download" : true,
       "git_shallow" : false,
-      "git_tag" : "d3477661d771e0d6fd22259bf6dd6f8c64a7401c",
+      "git_tag" : "71e8f81ebb61d17dcbe8df892d208f6401514bf6",
       "git_url" : "https://github.com/NVIDIA/cuCollections.git",
       "version" : "0.0.1"
     },
@@ -109,6 +109,14 @@
       "git_shallow" : false,
       "git_tag" : "1e2664a70ec14907409cadcceb14d79b9670bcdb",
       "git_url" : "https://github.com/apache/arrow-nanoarrow.git",
+      "patches" : 
+      [
+        {
+          "file" : "${current_json_dir}/nanoarrow_clang_tidy_compliance.diff",
+          "fixed_in" : "",
+          "issue" : "https://github.com/apache/arrow-nanoarrow/issues/537"
+        }
+      ],
       "version" : "0.6.0.dev"
     },
     "nvcomp" : 
@@ -141,9 +149,9 @@
     {
       "always_download" : true,
       "git_shallow" : false,
-      "git_tag" : "99e237ef6a42321a6bbd28b7aab9e4cc4105e6a3",
+      "git_tag" : "90a5631e1093ce44c4feceb88fcf557c3dfc043b",
       "git_url" : "https://github.com/rapidsai/rmm.git",
-      "version" : "24.10"
+      "version" : "24.12"
     },
     "spdlog" : 
     {
