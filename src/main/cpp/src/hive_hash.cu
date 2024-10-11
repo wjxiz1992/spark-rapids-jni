@@ -182,7 +182,7 @@ class hive_device_row_hasher {
       HIVE_INIT_HASH,
       cuda::proclaim_return_type<hive_hash_value_t>(
         [row_index, nulls = this->_check_nulls] __device__(auto hash, auto const& column) {
-          auto cur_hash = cudf::type_dispatcher<cudf::experimental::dispatch_void_if_nested>(
+          auto cur_hash = cudf::type_dispatcher(
             column.type(), element_hasher_adapter{nulls}, column, row_index);
           return HIVE_HASH_FACTOR * hash + cur_hash;
         }));
@@ -203,18 +203,64 @@ class hive_device_row_hasher {
     {
     }
 
-    template <typename T, CUDF_ENABLE_IF(not cudf::is_nested<T>())>
-    __device__ hive_hash_value_t operator()(cudf::column_device_view const& col,
-                                            cudf::size_type row_index) const noexcept
-    {
-      return this->hash_functor.template operator()<T>(col, row_index);
-    }
+    struct stack_element {
+      cudf::column_device_view col;
+      int child_index;
+      hive_hash_value_t hash;
 
-    template <typename T, CUDF_ENABLE_IF(cudf::is_nested<T>())>
+      __device__ stack_element() = delete;
+      __device__ stack_element(cudf::column_device_view col) : col(col), child_index(0), hash(HIVE_INIT_HASH) {}
+    };
+
+    template <typename T>
     __device__ hive_hash_value_t operator()(cudf::column_device_view const& col,
                                             cudf::size_type row_index) const noexcept
     {
-      CUDF_UNREACHABLE("Nested type is not supported");
+      cudf::column_device_view curr_col = col.slice(row_index, 1);
+      stack_element stack[8] = {stack_element(curr_col), stack_element(curr_col), stack_element(curr_col), stack_element(curr_col),
+                                stack_element(curr_col), stack_element(curr_col), stack_element(curr_col), stack_element(curr_col)};
+      int stack_size = 0;
+
+      stack[stack_size++] = stack_element(curr_col);
+
+      while (stack_size > 0) {
+        stack_element* element = &stack[stack_size - 1];
+
+        if (element->col.type().id() == cudf::type_id::STRUCT) {
+          if (element->child_index == element->col.num_child_columns()) {
+            stack_size--;
+            stack_element* parent = &stack[stack_size - 1];
+            parent->hash = HIVE_HASH_FACTOR * parent->hash + element->hash;
+          } else {
+            stack[stack_size++] = stack_element(cudf::detail::structs_column_device_view(element->col).get_sliced_child(element->child_index++));
+          }
+        } else if (element->col.type().id() == cudf::type_id::LIST) {
+          curr_col = cudf::detail::lists_column_device_view(element->col).get_sliced_child();
+          if (element->child_index == curr_col.size()) {
+            stack_size--;
+            stack_element* parent = &stack[stack_size - 1];
+            parent->hash = HIVE_HASH_FACTOR * parent->hash + element->hash;
+          } else {
+            stack[stack_size++] = stack_element(curr_col.slice(element->child_index++, 1));
+          }
+        } else {
+          curr_col = element->col;
+          element->hash = cudf::detail::accumulate(
+            thrust::counting_iterator(0),
+            thrust::counting_iterator(curr_col.size()),
+            HIVE_INIT_HASH,
+            [curr_col, hasher = this->hash_functor] __device__(auto hash, auto element_index) {
+              auto cur_hash = cudf::type_dispatcher<cudf::experimental::dispatch_void_if_nested>(
+                curr_col.type(), hasher, curr_col, element_index);
+              printf("mydebug: element_index: %d, cur_hash: %d\n", element_index, cur_hash);
+              return HIVE_HASH_FACTOR * hash + cur_hash;
+            });
+          stack_size--;
+          stack_element* parent = &stack[stack_size - 1];
+          parent->hash = HIVE_HASH_FACTOR * parent->hash + element->hash;
+        }
+      }
+      return stack[0].hash;
     }
 
    private:

@@ -510,4 +510,164 @@ public class HashTest {
       assertColumnsAreEqual(expected, result);
     }
   }
+
+  @Test
+  void testHiveHashStruct() {
+    try (ColumnVector strings = ColumnVector.fromStrings(
+          "a", "B\n", "dE\"\u0100\t\u0101 \ud720\ud721",
+          "This is a long string (greater than 128 bytes/char string) case to test this " +
+          "hash function. Just want an abnormal case here to see if any error may happen when" +
+          "doing the hive hashing",
+          null, null);
+         ColumnVector integers = ColumnVector.fromBoxedInts(
+          0, 100, -100, Integer.MIN_VALUE, Integer.MAX_VALUE, null);
+         ColumnVector doubles = ColumnVector.fromBoxedDoubles(0.0, 100.0, -100.0,
+          POSITIVE_DOUBLE_NAN_LOWER_RANGE, POSITIVE_DOUBLE_NAN_UPPER_RANGE, null);
+         ColumnVector floats = ColumnVector.fromBoxedFloats(0f, 100f, -100f,
+          NEGATIVE_FLOAT_NAN_LOWER_RANGE, NEGATIVE_FLOAT_NAN_UPPER_RANGE, null);
+         ColumnVector bools = ColumnVector.fromBoxedBooleans(
+          true, false, null, false, true, null);
+         ColumnView structs = ColumnView.makeStructView(strings, integers, doubles, floats, bools);
+         ColumnVector result = Hash.hiveHash(new ColumnView[]{structs});
+         ColumnVector expected = Hash.hiveHash(new ColumnVector[]{strings, integers, doubles, floats, bools})) {
+      assertColumnsAreEqual(expected, result);
+    }
+  }
+
+  @Test
+  void testHiveHashNestedStruct() {
+    try (ColumnVector strings = ColumnVector.fromStrings(
+          "a", "B\n", "dE\"\u0100\t\u0101 \ud720\ud721",
+          "This is a long string (greater than 128 bytes/char string) case to test this " +
+          "hash function. Just want an abnormal case here to see if any error may happen when" +
+          "doing the hive hashing",
+          null, null);
+         ColumnVector integers = ColumnVector.fromBoxedInts(
+          0, 100, -100, Integer.MIN_VALUE, Integer.MAX_VALUE, null);
+         ColumnVector doubles = ColumnVector.fromBoxedDoubles(0.0, 100.0, -100.0,
+          POSITIVE_DOUBLE_NAN_LOWER_RANGE, POSITIVE_DOUBLE_NAN_UPPER_RANGE, null);
+         ColumnVector floats = ColumnVector.fromBoxedFloats(0f, 100f, -100f,
+          NEGATIVE_FLOAT_NAN_LOWER_RANGE, NEGATIVE_FLOAT_NAN_UPPER_RANGE, null);
+         ColumnVector bools = ColumnVector.fromBoxedBooleans(
+          true, false, null, false, true, null);
+         ColumnView structs1 = ColumnView.makeStructView(strings, integers);
+         ColumnView structs2 = ColumnView.makeStructView(structs1, doubles);
+         ColumnView structs3 = ColumnView.makeStructView(bools);
+         ColumnView structs = ColumnView.makeStructView(structs2, floats, structs3);
+         ColumnVector expected = Hash.hiveHash(new ColumnVector[]{strings, integers, doubles, floats, bools});
+         ColumnVector result = Hash.hiveHash(new ColumnView[]{structs})) {
+      assertColumnsAreEqual(expected, result);
+    }
+  }
+
+  @Test
+  void testHiveHashListsAndNestedLists() {
+    try (ColumnVector stringListCV = ColumnVector.fromLists(
+             new ListType(true, new BasicType(true, DType.STRING)),
+             Arrays.asList(null, "a"),
+             Arrays.asList("B\n", ""),
+             Arrays.asList("dE\"\u0100\t\u0101", " \ud720\ud721"),
+             Arrays.asList("This is a long string (greater than 128 bytes/char string) case to test this " +
+            "hash function. Just want an abnormal case here to see if any error may happen when" +
+            "doing the hive hashing", null),
+            Arrays.asList(null,""),
+            null);
+         ColumnVector strings1 = ColumnVector.fromStrings(
+          null, "B\n", "dE\"\u0100\t\u0101",
+             "This is a long string (greater than 128 bytes/char string) case to test this " +
+            "hash function. Just want an abnormal case here to see if any error may happen when" +
+            "doing the hive hashing", null, null);
+         ColumnVector strings2 = ColumnVector.fromStrings(
+             "a", "", " \ud720\ud721", null, "", null);
+         ColumnVector nestedStringListCV = ColumnVector.fromLists(
+          new ListType(true, new ListType(true, new BasicType(true, DType.STRING))),
+          Arrays.asList(null, Collections.singletonList("a")),
+          Arrays.asList(Arrays.asList("B\n", "")),
+          Arrays.asList(Collections.singletonList("dE\"\u0100\t\u0101"), Collections.singletonList(" \ud720\ud721")),
+          Arrays.asList(Collections.singletonList("This is a long string (greater than 128 bytes/char string) case to test this " +
+            "hash function. Just want an abnormal case here to see if any error may happen when" +
+            "doing the hive hashing"),null),
+          Arrays.asList(Arrays.asList(null, "")),
+          null);
+         ColumnVector stringExpected = Hash.hiveHash(new ColumnView[]{strings1, strings2});
+         ColumnVector stringResult = Hash.hiveHash(new ColumnView[]{stringListCV});
+         ColumnVector nestedStringResult = Hash.hiveHash(new ColumnView[]{nestedStringListCV});
+         ColumnVector intListCV = ColumnVector.fromLists(
+             new ListType(true, new BasicType(true, DType.INT32)),
+             null,
+             Arrays.asList(0, -2, 3),
+             Arrays.asList(null, Integer.MAX_VALUE, null),
+             Arrays.asList(5, null, -6),
+             Arrays.asList(Integer.MIN_VALUE, null, null),
+             null);
+         ColumnVector integers1 = ColumnVector.fromBoxedInts(null, 0, null, 5, Integer.MIN_VALUE, null);
+         ColumnVector integers2 = ColumnVector.fromBoxedInts(null, -2, Integer.MAX_VALUE, null, null, null);
+         ColumnVector integers3 = ColumnVector.fromBoxedInts(null, 3, null, -6, null, null);
+         ColumnVector nestedIntListCV = ColumnVector.fromLists(
+             new ListType(true, new ListType(true, new BasicType(true, DType.INT32))),
+             Arrays.asList(Arrays.asList(null, null), null),
+             Arrays.asList(Arrays.asList(0, -2, 3)),
+             Arrays.asList(null,Collections.singletonList(Integer.MAX_VALUE),null),
+             Arrays.asList(Collections.singletonList(5), null, Collections.singletonList(-6)),
+             Arrays.asList(Collections.singletonList(Integer.MIN_VALUE),Arrays.asList(null, null)),
+             null);
+         ColumnVector intExpected = Hash.hiveHash(new ColumnVector[]{integers1, integers2, integers3});
+         ColumnVector intResult = Hash.hiveHash(new ColumnVector[]{intListCV});
+         ColumnVector nestedIntResult = Hash.hiveHash(new ColumnVector[]{nestedIntListCV});) {
+      assertColumnsAreEqual(stringExpected, stringResult);
+      assertColumnsAreEqual(stringExpected, nestedStringResult);
+      assertColumnsAreEqual(intExpected, intResult);
+      assertColumnsAreEqual(intExpected, nestedIntResult);
+    }
+  }
+
+  @Test
+  void testHiveHashNestedType() {
+    try (ColumnVector stringListCV = ColumnVector.fromLists(
+              new ListType(true, new BasicType(true, DType.STRING)),
+              Arrays.asList("B\n", ""),
+              Arrays.asList("dE\"\u0100\t\u0101", " \ud720\ud721"),
+              Arrays.asList("This is a long string (greater than 128 bytes/char string) case to test this " +
+            "hash function. Just want an abnormal case here to see if any error may happen when" +
+            "doing the hive hashing", null),
+            Arrays.asList(null,""),
+            null);
+          ColumnVector strings1 = ColumnVector.fromStrings(
+          null, "B\n", "dE\"\u0100\t\u0101",
+              "This is a long string (greater than 128 bytes/char string) case to test this " +
+            "hash function. Just want an abnormal case here to see if any error may happen when" +
+            "doing the hive hashing", null, null);
+          ColumnVector strings2 = ColumnVector.fromStrings(
+              "a", "", " \ud720\ud721", null, "", null);
+         ColumnView stringStruct = ColumnView.makeStructView(strings1, strings2);
+         ColumnVector stringExpected = Hash.hiveHash(new ColumnView[]{stringStruct});
+         ColumnVector stringResult = Hash.hiveHash(new ColumnView[]{stringListCV});
+         ColumnVector intListCV = ColumnVector.fromLists(
+             new ListType(true, new BasicType(true, DType.INT32)),
+             null,
+             Arrays.asList(0, -2, 3),
+             Arrays.asList(null,Integer.MAX_VALUE,null),
+             Arrays.asList(5,null ,-6),
+             Arrays.asList(Integer.MIN_VALUE, null, null),
+             null);
+         ColumnVector integers1 = ColumnVector.fromBoxedInts(null, 0, null, 5, Integer.MIN_VALUE, null);
+         ColumnVector integers2 = ColumnVector.fromBoxedInts(null, -2, Integer.MAX_VALUE, null, null, null);
+         ColumnVector integers3 = ColumnVector.fromBoxedInts(null, 3, null, -6, null, null);
+         ColumnVector intExpected =
+             Hash.hiveHash(new ColumnVector[]{integers1, integers2, integers3});
+         ColumnVector intResult = Hash.hiveHash(new ColumnVector[]{intListCV});
+         ColumnVector doubles = ColumnVector.fromBoxedDoubles(
+          0.0, 100.0, -100.0, POSITIVE_DOUBLE_NAN_LOWER_RANGE, POSITIVE_DOUBLE_NAN_UPPER_RANGE, null);
+         ColumnVector floats = ColumnVector.fromBoxedFloats(
+          0f, 100f, -100f, NEGATIVE_FLOAT_NAN_LOWER_RANGE, NEGATIVE_FLOAT_NAN_UPPER_RANGE, null);
+         ColumnView structCV = ColumnView.makeStructView(intListCV, stringListCV, doubles, floats);
+           ColumnVector nestedExpected =
+             Hash.hiveHash(new ColumnView[]{intListCV, strings1, strings2, doubles, floats});
+         ColumnVector nestedResult =
+             Hash.hiveHash(new ColumnView[]{structCV})) {
+      assertColumnsAreEqual(stringExpected, stringResult);
+      assertColumnsAreEqual(intExpected, intResult);
+      assertColumnsAreEqual(nestedExpected, nestedResult);
+    }
+  }
 }
