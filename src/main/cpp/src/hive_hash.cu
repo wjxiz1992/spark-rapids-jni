@@ -183,6 +183,7 @@ class hive_device_row_hasher {
       cuda::proclaim_return_type<hive_hash_value_t>(
         [row_index, nulls = this->_check_nulls] __device__(auto hash, auto const& column) {
           auto cur_hash = cudf::type_dispatcher(
+          auto cur_hash = cudf::type_dispatcher(
             column.type(), element_hasher_adapter{nulls}, column, row_index);
           return HIVE_HASH_FACTOR * hash + cur_hash;
         }));
@@ -203,7 +204,16 @@ class hive_device_row_hasher {
     {
     }
 
-    template <typename T, CUDF_ENABLE_IF(not cudf::is_nested<T>())>
+    struct stack_element {
+      cudf::column_device_view col;
+      int child_index;
+      hive_hash_value_t hash;
+
+      __device__ stack_element() = delete;
+      __device__ stack_element(cudf::column_device_view col) : col(col), child_index(0), hash(HIVE_INIT_HASH) {}
+    };
+
+    template <typename T>
     __device__ hive_hash_value_t operator()(cudf::column_device_view const& col,
                                             cudf::size_type row_index) const noexcept
     {
