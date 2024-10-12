@@ -182,7 +182,7 @@ class hive_device_row_hasher {
       HIVE_INIT_HASH,
       cuda::proclaim_return_type<hive_hash_value_t>(
         [row_index, nulls = this->_check_nulls] __device__(auto hash, auto const& column) {
-          auto cur_hash = cudf::type_dispatcher<cudf::experimental::dispatch_void_if_nested>(
+          auto cur_hash = cudf::type_dispatcher(
             column.type(), element_hasher_adapter{nulls}, column, row_index);
           return HIVE_HASH_FACTOR * hash + cur_hash;
         }));
@@ -210,11 +210,73 @@ class hive_device_row_hasher {
       return this->hash_functor.template operator()<T>(col, row_index);
     }
 
+    struct StackElement{
+      cudf::column_device_view col;   // current column
+      int child_idx;                  // index of the child column to process next
+      int factor_exp;                 // factor exponent for the current column
+      //factor_exp = parent.factor_exp + parent.child_num - 1 - parent.child_idx
+
+      __device__ StackElement() = delete;
+      __device__ StackElement(cudf::column_device_view col) : col(col), child_idx(0), factor_exp(0) {}
+      __device__ StackElement(cudf::column_device_view col, int factor_exp) : col(col), child_idx(0), factor_exp(factor_exp) {}
+    };
+
+    typedef StackElement* StackElementPtr;
     template <typename T, CUDF_ENABLE_IF(cudf::is_nested<T>())>
     __device__ hive_hash_value_t operator()(cudf::column_device_view const& col,
                                             cudf::size_type row_index) const noexcept
     {
-      CUDF_UNREACHABLE("Nested type is not supported");
+      hive_hash_value_t ret = HIVE_INIT_HASH;
+      cudf::column_device_view curr_col = col.slice(row_index, 1);
+      // column_device_view default constructor is deleted, can not allocate column_device_view array directly
+      // use byte array to wrapper StackElement list
+      constexpr int len_of_8_StackElement = 8 * sizeof(StackElement);
+      uint8_t stack_wrapper[len_of_8_StackElement];
+      StackElementPtr stack = reinterpret_cast<StackElementPtr>(stack_wrapper);
+      int stack_size = 0;
+
+      stack[stack_size++] = StackElement(curr_col, 0);
+      //depth first search
+      while (stack_size > 0) {
+        StackElementPtr element = &stack[stack_size - 1];
+        curr_col = element->col;
+
+        if (curr_col.type().id() == cudf::type_id::STRUCT) {
+          if (element->child_idx == curr_col.num_child_columns()) {
+            // All child columns processed, pop the stack
+            stack_size--;
+          } else {
+            // Push child column to stack
+            stack[stack_size++] = StackElement(cudf::detail::structs_column_device_view(curr_col).get_sliced_child(element->child_idx), element->factor_exp + curr_col.num_child_columns() - 1 - element->child_idx);
+            element->child_idx++;
+          }
+        } else if (curr_col.type().id() == cudf::type_id::LIST) {
+          //lists_column_device_view has a different interface from structs_column_device_view
+          curr_col = cudf::detail::lists_column_device_view(curr_col).get_sliced_child();
+          if (element->child_idx == curr_col.size()) {
+            stack_size--;
+          } else {
+            stack[stack_size++] = StackElement(curr_col.slice(element->child_idx, 1), element->factor_exp + curr_col.size() - element->child_idx - 1);
+            element->child_idx++;
+          }
+        } else { // Process primitive type
+          hive_hash_value_t cur_hash = cudf::detail::accumulate(
+            thrust::counting_iterator(0),
+            thrust::counting_iterator(curr_col.size()),
+            HIVE_INIT_HASH,
+            [curr_col, hasher = this->hash_functor] __device__(auto hash, auto element_index) {
+              return HIVE_HASH_FACTOR * hash + cudf::type_dispatcher<cudf::experimental::dispatch_void_if_nested>(
+                curr_col.type(), hasher, curr_col, element_index);
+            });
+          //ret += cur_hash * (HIVE_HASH_FACTOR ^ element->factor_exp);
+          for(int i = 0; i < element->factor_exp; i++) {
+            cur_hash *= HIVE_HASH_FACTOR;
+          }
+          ret += cur_hash;
+          stack_size--;
+        }
+      }
+      return ret;
     }
 
    private:
