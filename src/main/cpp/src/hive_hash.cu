@@ -157,7 +157,7 @@ hive_hash_value_t __device__ inline hive_hash_function<cudf::timestamp_us>::oper
  * @tparam hash_function Hash functor to use for hashing elements. Must be hive_hash_function.
  * @tparam Nullate A cudf::nullate type describing whether to check for nulls.
  */
-template <template <typename> class hash_function, typename Nullate>
+template <template <typename> class hash_function, typename Nullate, int MAX_NESTED_LEN = 8>
 class hive_device_row_hasher {
  public:
   CUDF_HOST_DEVICE hive_device_row_hasher(Nullate check_nulls, cudf::table_device_view t) noexcept
@@ -229,8 +229,8 @@ class hive_device_row_hasher {
       cudf::column_device_view curr_col = col.slice(row_index, 1);
       // column_device_view default constructor is deleted, can not allocate column_device_view array directly
       // use byte array to wrapper StackElement list
-      constexpr int len_of_8_StackElement = 8 * sizeof(StackElement);
-      uint8_t stack_wrapper[len_of_8_StackElement];
+      constexpr int len_of_maxlen_stack_element = MAX_NESTED_LEN * sizeof(StackElement);
+      uint8_t stack_wrapper[len_of_maxlen_stack_element];
       StackElementPtr stack = reinterpret_cast<StackElementPtr>(stack_wrapper);
       int stack_size = 0;
 
