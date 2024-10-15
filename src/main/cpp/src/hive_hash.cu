@@ -157,7 +157,7 @@ hive_hash_value_t __device__ inline hive_hash_function<cudf::timestamp_us>::oper
  * @tparam hash_function Hash functor to use for hashing elements. Must be hive_hash_function.
  * @tparam Nullate A cudf::nullate type describing whether to check for nulls.
  */
-template <template <typename> class hash_function, typename Nullate, int MAX_NESTED_LEN = 8>
+template <template <typename> class hash_function, typename Nullate, int MAX_NESTED_LEN>
 class hive_device_row_hasher {
  public:
   CUDF_HOST_DEVICE hive_device_row_hasher(Nullate check_nulls, cudf::table_device_view t) noexcept
@@ -191,8 +191,6 @@ class hive_device_row_hasher {
  private:
   /**
    * @brief Computes the hash value of an element in the given column.
-   *
-   * Only supported non nested types now
    */
   class element_hasher_adapter {
    public:
@@ -210,43 +208,170 @@ class hive_device_row_hasher {
       return this->hash_functor.template operator()<T>(col, row_index);
     }
 
+    /**
+     * @brief A structure representing an element in the stack used for processing columns.
+     *
+     * This structure is used to keep track of the current column being processed, the index of the
+     * next child column to process, and the factor for the current column.
+     *
+     * @param col The current column being processed.
+     * @param child_idx The index of the next child column to process.
+     * @param factor The factor for the current column.
+     *
+     * @note The default constructor is deleted to prevent uninitialized usage.
+     *
+     * @constructor
+     * @param col The column device view to be processed.
+     * @param factor The factor for the column.
+     */
     struct StackElement{
       cudf::column_device_view col;   // current column
-      int child_idx;                  // index of the child column to process next
-      int factor_exp;                 // factor exponent for the current column
-      //factor_exp = parent.factor_exp + parent.child_num - 1 - parent.child_idx
+      int child_idx;                  // index of the child column to process next, initialized as 0
+      hive_hash_value_t factor;       // factor for the current column
 
       __device__ StackElement() = delete;
-      __device__ StackElement(cudf::column_device_view col, int factor_exp) : col(col), child_idx(0), factor_exp(factor_exp) {}
+      __device__ StackElement(cudf::column_device_view col, hive_hash_value_t factor) : col(col), child_idx(0), factor(factor) {}
     };
 
     typedef StackElement* StackElementPtr;
+
+    /**
+     * @brief Functor to compute the hive hash value for a nested column.
+     *
+     * This functor computes the hive hash value for a given row in a nested column. It uses a depth-first search
+     * approach to traverse the nested structure of the column. The hash value is computed by accumulating the
+     * hash values of the primitive elements in the column.
+     *
+     * For example, consider the following nested column: `Struct<Struct<int, float>, decimal>`
+     *
+     *      S1
+     *     / \
+     *    S2  d
+     *   / \
+     *  i   f
+     *
+     * The hash value for the column is computed as:
+     * hash(S1) = hash(S2) * HIVE_HASH_FACTOR + hash(d)
+     *          = (hash(i) * HIVE_HASH_FACTOR + hash(f)) * HIVE_HASH_FACTOR + hash(d)
+     *          = hash(i) * HIVE_HASH_FACTOR^2 + hash(f) * HIVE_HASH_FACTOR + hash(d)
+     *
+     * From the above example, we can see that the factor of a column is calculated as the product of
+     * its parent column's factor and its factor relative to its parent column.
+     *
+     * The relative factor is calculated as:
+     * relative_factor = HIVE_HASH_FACTOR ^ (parent.num_child_columns() - 1 - child_idx)
+     * (parent.num_child_columns() - 1 - child_idx) can be interpreted as a reverse index of the child column.
+     *
+     * Thus, we can compute the factor of the current column during the dfs traversal process,
+     * performing the actual computation only for the primitive types and accumulating the hash values into the result.
+     *
+     * As lists columns have a different interface from structs columns, we need to handle them separately.
+     * For example, consider the following nested column: `List<List<int>>`
+     * lists_column = {{1, 0}, null, {2, null}}
+     *
+     *     L1
+     *     |
+     *     L2
+     *     |
+     *     i
+     *
+     * List level L1:
+     * |Index|      List<list<int>>    |
+     * |-----|-------------------------|
+     * |0    |{{1, 0}, null, {2, null}}|
+     * length: 1
+     * Offsets: 0, 3
+     *
+     * List level L2:
+     * |Index|List<int>|
+     * |-----|---------|
+     * |0    |{1, 0}   |
+     * |1    |null     |
+     * |2    |{2, null}|
+     * length: 3
+     * Offsets: 0, 2, 2, 4
+     * null_mask: 101
+     *
+     * Int level i:
+     * |Index|Int |
+     * |-----|----|
+     * |0    |1   |
+     * |1    |0   |
+     * |2    |2   |
+     * |3    |null|
+     * length: 4
+     *
+     * Since the underlying data loses the null information of the top-level list column,
+     * I cannot directly use the underlying data to calculate the hash value.
+     *
+     * The computation process of my algorithm is as follows:
+     *            L1              List<list<int>>
+     *            |
+     *            L2              List<int>
+     *      /     |     \
+     *    L2[0] L2[1] L2[2]       List<int>
+     *     |            |
+     *    i1           i2        Int
+     *  /    \        /   \
+     * i1[0] i1[1]  i2[0] i2[1]   Int
+     *
+     *  Int level i1
+     * |Index|Int |
+     * |-----|----|
+     * |0    |1   |
+     * |1    |0   |
+     * length: 2
+     *
+     * Int level i2
+     * |Index|Int |
+     * |-----|----|
+     * |0    |2   |
+     * |1    |null|
+     * length: 2
+     *
+     * L2、i1、i2 are all temporary columns, which would not be pushed into the stack.
+     *
+     * @tparam T The type of the column.
+     * @param col The column device view.
+     * @param row_index The index of the row to compute the hash for.
+     * @return The computed hive hash value.
+     *
+     * @note This function is only enabled for nested column types.
+     */
     template <typename T, CUDF_ENABLE_IF(cudf::is_nested<T>())>
     __device__ hive_hash_value_t operator()(cudf::column_device_view const& col,
                                             cudf::size_type row_index) const noexcept
     {
       hive_hash_value_t ret = HIVE_INIT_HASH;
       cudf::column_device_view curr_col = col.slice(row_index, 1);
-      // column_device_view default constructor is deleted, can not allocate column_device_view array directly
+      // column_device_view default constructor is deleted, can not allocate StackElement array directly
       // use byte array to wrapper StackElement list
       constexpr int len_of_maxlen_stack_element = MAX_NESTED_LEN * sizeof(StackElement);
       uint8_t stack_wrapper[len_of_maxlen_stack_element];
       StackElementPtr stack = reinterpret_cast<StackElementPtr>(stack_wrapper);
       int stack_size = 0;
 
-      stack[stack_size++] = StackElement(curr_col, 0);
-      //depth first search
+      stack[stack_size++] = StackElement(curr_col, 1);
+
       while (stack_size > 0) {
         StackElementPtr element = &stack[stack_size - 1];
         curr_col = element->col;
+        // Do not pop here.
+        // The current node will only be popped after it is processed. The definition of `processed` is:
+        // - For nested types, it is when the children are processed (i.e., cur.child_idx == cur.num_child()).
+        // - For primitive types, it is when the hash value is computed and accumulated into the result.
 
         if (curr_col.type().id() == cudf::type_id::STRUCT) {
+          // All child columns processed, pop the stack
           if (element->child_idx == curr_col.num_child_columns()) {
-            // All child columns processed, pop the stack
             stack_size--;
           } else {
-            // Push child column to stack
-            stack[stack_size++] = StackElement(cudf::detail::structs_column_device_view(curr_col).get_sliced_child(element->child_idx), element->factor_exp + curr_col.num_child_columns() - 1 - element->child_idx);
+            // Calculate the factor for the child column, and push the child column into the stack
+            hive_hash_value_t cur_factor = element->factor;
+            for(int i = 0; i < curr_col.num_child_columns() - 1 - element->child_idx; i++) {
+              cur_factor *= HIVE_HASH_FACTOR;
+            }
+            stack[stack_size++] = StackElement(cudf::detail::structs_column_device_view(curr_col).get_sliced_child(element->child_idx), cur_factor);
             element->child_idx++;
           }
         } else if (curr_col.type().id() == cudf::type_id::LIST) {
@@ -255,23 +380,19 @@ class hive_device_row_hasher {
           if (element->child_idx == curr_col.size()) {
             stack_size--;
           } else {
-            stack[stack_size++] = StackElement(curr_col.slice(element->child_idx, 1), element->factor_exp + curr_col.size() - element->child_idx - 1);
+            hive_hash_value_t cur_factor = element->factor;
+            for(int i = 0; i <  curr_col.size() - element->child_idx - 1; i++) {
+              cur_factor *= HIVE_HASH_FACTOR;
+            }
+            stack[stack_size++] = StackElement(curr_col.slice(element->child_idx, 1), cur_factor);
             element->child_idx++;
           }
-        } else { // Process primitive type
-          hive_hash_value_t cur_hash = cudf::detail::accumulate(
-            thrust::counting_iterator(0),
-            thrust::counting_iterator(curr_col.size()),
-            HIVE_INIT_HASH,
-            [curr_col, hasher = this->hash_functor] __device__(auto hash, auto element_index) {
-              return HIVE_HASH_FACTOR * hash + cudf::type_dispatcher<cudf::experimental::dispatch_void_if_nested>(
-                curr_col.type(), hasher, curr_col, element_index);
-            });
-          //ret += cur_hash * (HIVE_HASH_FACTOR ^ element->factor_exp);
-          for(int i = 0; i < element->factor_exp; i++) {
-            cur_hash *= HIVE_HASH_FACTOR;
-          }
-          ret += cur_hash;
+        } else {
+          // There is only one element in the column for primitive types
+          hive_hash_value_t cur_hash = cudf::type_dispatcher(
+            curr_col.type(), this->hash_functor, curr_col, 0);
+          // Accumulate the hash value into the result
+          ret += cur_hash * element->factor;
           stack_size--;
         }
       }
@@ -285,6 +406,28 @@ class hive_device_row_hasher {
   Nullate const _check_nulls;
   cudf::table_device_view const _table;
 };
+
+void check_nested_depth(cudf::table_view const& input, int max_nested_len)
+{
+  using column_checker_fn_t = std::function<void(cudf::column_view const&, int)>;
+
+  column_checker_fn_t check_nested_depth_impl = [&](cudf::column_view const& col, int max_nested_len) {
+    if (col.type().id() == cudf::type_id::LIST) {
+      check_nested_depth_impl(cudf::lists_column_view(col).child(), max_nested_len - 1);
+    } else if (col.type().id() == cudf::type_id::STRUCT) {
+      for (auto child = col.child_begin(); child != col.child_end(); ++child) {
+        check_nested_depth_impl(*child, max_nested_len - 1);
+      }
+    } else {      // Primitive type
+      CUDF_EXPECTS(max_nested_len > 0, "The nested depth of the input table exceeds the maximum supported depth.");
+    }
+  };
+
+  for (cudf::column_view const& col : input) {
+    check_nested_depth_impl(col, max_nested_len);
+  }
+}
+
 }  // namespace
 
 std::unique_ptr<cudf::column> hive_hash(cudf::table_view const& input,
@@ -300,6 +443,10 @@ std::unique_ptr<cudf::column> hive_hash(cudf::table_view const& input,
   // Return early if there's nothing to hash
   if (input.num_columns() == 0 || input.num_rows() == 0) { return output; }
 
+  //Nested depth cannot exceed 8
+  int const max_nested_len = 8;
+  check_nested_depth(input, max_nested_len);
+
   bool const nullable   = has_nested_nulls(input);
   auto const input_view = cudf::table_device_view::create(input, stream);
   auto output_view      = output->mutable_view();
@@ -308,7 +455,8 @@ std::unique_ptr<cudf::column> hive_hash(cudf::table_view const& input,
   thrust::tabulate(rmm::exec_policy(stream),
                    output_view.begin<hive_hash_value_t>(),
                    output_view.end<hive_hash_value_t>(),
-                   hive_device_row_hasher<hive_hash_function, bool>(nullable, *input_view));
+                   hive_device_row_hasher<hive_hash_function, bool, max_nested_len>(nullable,
+                                                                                     *input_view));
 
   return output;
 }
