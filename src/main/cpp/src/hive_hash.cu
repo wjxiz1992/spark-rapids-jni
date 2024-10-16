@@ -361,7 +361,7 @@ class hive_device_row_hasher {
                                             cudf::size_type row_index) const noexcept
     {
       cudf::column_device_view curr_col = col.slice(row_index, 1);
-      // column_device_view default constructor is deleted, can not allocate StackElement array directly
+      // StackElement default constructor is deleted, so it can not allocate a StackElement array directly.
       // Instead leverage the byte array to create the StackElement array.
       constexpr int len_of_maxlen_stack_element = MAX_NESTED_DEPTH * sizeof(StackElement);
       uint8_t stack_wrapper[len_of_maxlen_stack_element];
