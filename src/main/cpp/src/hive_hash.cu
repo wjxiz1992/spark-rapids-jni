@@ -316,7 +316,8 @@ class hive_device_row_hasher {
      * length: 4
      *
      * Since the underlying data loses the null information of the top-level list column,
-     * I can not find a way to compute the hash value using the underlying data merely.
+     * It will produce different results than Spark to compute the hash value using the
+     * underlying data merely.
      *
      * For example, `List<List<int>>` column {{1, 0}, {2, null}} has the same underlying data as the above
      * `List<List<int>>` column {{1, 0}, null, {2, null}}. However, they have different hive hash values.
