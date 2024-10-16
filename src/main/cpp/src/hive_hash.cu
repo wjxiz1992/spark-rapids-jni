@@ -322,7 +322,7 @@ class hive_device_row_hasher {
      * For example, `List<List<int>>` column {{1, 0}, {2, null}} has the same underlying data as the above
      * `List<List<int>>` column {{1, 0}, null, {2, null}}. However, they have different hive hash values.
      *
-     * The computation process for lists columns in my implementation is as follows:
+     * The computation process for lists columns in this solution is as follows:
      *            L1              List<list<int>>
      *            |
      *            L2              List<int>
