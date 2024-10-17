@@ -402,7 +402,7 @@ class hive_device_row_hasher {
           }
         } else {
           // There is only one element in the column for primitive types
-          element->cur_hash = cudf::type_dispatcher(
+          element->cur_hash = cudf::type_dispatcher<cudf::experimental::dispatch_void_if_nested>(
             curr_col.type(), this->hash_functor, curr_col, 0);
           stack_size--;
           if(stack_size > 0) {
