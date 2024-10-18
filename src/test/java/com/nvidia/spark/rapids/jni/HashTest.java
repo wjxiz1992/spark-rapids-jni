@@ -18,6 +18,7 @@ package com.nvidia.spark.rapids.jni;
 
 import ai.rapids.cudf.ColumnVector;
 import ai.rapids.cudf.ColumnView;
+import ai.rapids.cudf.CudfException;
 import ai.rapids.cudf.DType;
 import ai.rapids.cudf.HostColumnVector.*;
 import org.junit.jupiter.api.Test;
@@ -26,6 +27,7 @@ import java.util.Arrays;
 import java.util.Collections;
 
 import static ai.rapids.cudf.AssertUtils.*;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class HashTest {
 // IEEE 754 NaN values
@@ -648,6 +650,35 @@ public class HashTest {
          ColumnVector nestedExpected = ColumnVector.fromInts(93217, 286968083, 59992121, -1697616301, 2127036416, 0);
          ColumnVector nestedResult = Hash.hiveHash(new ColumnView[]{structCV})) {
       assertColumnsAreEqual(nestedExpected, nestedResult);
+    }
+  }
+
+  @Test
+  void testHiveHashNestedDepthExceedsLimit() {
+    try (ColumnVector nestedIntListCV = ColumnVector.fromLists(
+            new ListType(true, new ListType(true, new BasicType(true, DType.INT32))),
+            Arrays.asList(Arrays.asList(null, null), null),
+            Arrays.asList(Collections.singletonList(0), Collections.singletonList(-2), Collections.singletonList(3)),
+            Arrays.asList(null, Collections.singletonList(Integer.MAX_VALUE)),
+            Arrays.asList(Collections.singletonList(5), Arrays.asList(-6, null)),
+            Arrays.asList(Collections.singletonList(Integer.MIN_VALUE), null),
+            null);
+          ColumnVector integers = ColumnVector.fromBoxedInts(
+            0, 100, -100, Integer.MIN_VALUE, Integer.MAX_VALUE, null);
+          ColumnVector doubles = ColumnVector.fromBoxedDoubles(0.0, 100.0, -100.0,
+            POSITIVE_DOUBLE_NAN_LOWER_RANGE, POSITIVE_DOUBLE_NAN_UPPER_RANGE, null);
+           ColumnVector floats = ColumnVector.fromBoxedFloats(0f, 100f, -100f,
+            NEGATIVE_FLOAT_NAN_LOWER_RANGE, NEGATIVE_FLOAT_NAN_UPPER_RANGE, null);
+           ColumnVector bools = ColumnVector.fromBoxedBooleans(
+            true, false, null, false, true, null);
+           ColumnView structs1 = ColumnView.makeStructView(nestedIntListCV, integers);
+           ColumnView structs2 = ColumnView.makeStructView(structs1, doubles);
+           ColumnView structs3 = ColumnView.makeStructView(structs2, bools);
+           ColumnView structs4 = ColumnView.makeStructView(structs3);
+           ColumnView structs5 = ColumnView.makeStructView(structs4,floats);
+           ColumnView nestedResult = ColumnView.makeStructView(structs5);
+           ) {
+      assertThrows(CudfException.class, () -> Hash.hiveHash(new ColumnView[]{nestedResult}));
     }
   }
 }
