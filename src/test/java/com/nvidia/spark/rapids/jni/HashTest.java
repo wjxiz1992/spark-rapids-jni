@@ -667,17 +667,16 @@ public class HashTest {
             0, 100, -100, Integer.MIN_VALUE, Integer.MAX_VALUE, null);
           ColumnVector doubles = ColumnVector.fromBoxedDoubles(0.0, 100.0, -100.0,
             POSITIVE_DOUBLE_NAN_LOWER_RANGE, POSITIVE_DOUBLE_NAN_UPPER_RANGE, null);
-           ColumnVector floats = ColumnVector.fromBoxedFloats(0f, 100f, -100f,
+          ColumnVector floats = ColumnVector.fromBoxedFloats(0f, 100f, -100f,
             NEGATIVE_FLOAT_NAN_LOWER_RANGE, NEGATIVE_FLOAT_NAN_UPPER_RANGE, null);
-           ColumnVector bools = ColumnVector.fromBoxedBooleans(
+          ColumnVector bools = ColumnVector.fromBoxedBooleans(
             true, false, null, false, true, null);
-           ColumnView structs1 = ColumnView.makeStructView(nestedIntListCV, integers);
-           ColumnView structs2 = ColumnView.makeStructView(structs1, doubles);
-           ColumnView structs3 = ColumnView.makeStructView(structs2, bools);
-           ColumnView structs4 = ColumnView.makeStructView(structs3);
-           ColumnView structs5 = ColumnView.makeStructView(structs4,floats);
-           ColumnView nestedResult = ColumnView.makeStructView(structs5);
-           ) {
+          ColumnView structs1 = ColumnView.makeStructView(nestedIntListCV, integers);
+          ColumnView structs2 = ColumnView.makeStructView(structs1, doubles);
+          ColumnView structs3 = ColumnView.makeStructView(structs2, bools);
+          ColumnView structs4 = ColumnView.makeStructView(structs3);
+          ColumnView structs5 = ColumnView.makeStructView(structs4, floats);
+          ColumnView nestedResult = ColumnView.makeStructView(structs5);) {
       assertThrows(CudfException.class, () -> Hash.hiveHash(new ColumnView[]{nestedResult}));
     }
   }
