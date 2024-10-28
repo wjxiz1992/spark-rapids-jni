@@ -898,7 +898,7 @@ index 450cfbdbc8..55cb055398 100644
  
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
-@@ -590,6 +590,8 @@
+@@ -590,6 +590,9 @@
                                          <include>libcudfjni.so</include>
                                          <include>libcufilejni.so</include>
                                          <include>libnvcomp.so</include>
