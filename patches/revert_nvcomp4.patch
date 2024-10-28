@@ -904,6 +904,7 @@ index 450cfbdbc8..55cb055398 100644
                                          <include>libnvcomp.so</include>
 +                                        <include>libnvcomp_gdeflate.so</include>
 +                                        <include>libnvcomp_bitcomp.so</include>
++                                        <include>libnvcomp_optimal_parse.so</include>
                                      </includes>
                                  </resource>
                                  <resource>
@@ -916,7 +917,7 @@ index 58182c3e62..7ee590e3c8 100755
     */
    private static final String[][] loadOrder = new String[][]{
 +      new String[]{
-+          "nvcomp_bitcomp", "nvcomp_gdeflate"
++          "nvcomp_bitcomp", "nvcomp_gdeflate", "nvcomp_optimal_parse"
 +      },
        new String[]{
            "nvcomp"
@@ -933,7 +934,7 @@ index 32045f3c50..c18a90140b 100644
 -            "${PROJECT_BINARY_DIR}/libnvcomp.so"
 +    COMMAND
 +      ${CMAKE_COMMAND} -E copy $<TARGET_FILE:nvcomp::nvcomp> $<TARGET_FILE:nvcomp::nvcomp_gdeflate>
-+      $<TARGET_FILE:nvcomp::nvcomp_bitcomp> "${PROJECT_BINARY_DIR}"
++      $<TARGET_FILE:nvcomp::nvcomp_bitcomp> $<TARGET_FILE:nvcomp::nvcomp_optimal_parse> "${PROJECT_BINARY_DIR}"
      COMMENT "Copying nvcomp libraries to ${PROJECT_BINARY_DIR}"
    )
  endif()
