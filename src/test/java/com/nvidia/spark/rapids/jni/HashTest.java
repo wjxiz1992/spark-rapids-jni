@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2024, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -572,15 +572,15 @@ public class HashTest {
              Arrays.asList("B\n", ""),
              Arrays.asList("dE\"\u0100\t\u0101", " \ud720\ud721"),
              Collections.singletonList("This is a long string (greater than 128 bytes/char string) case to test this " +
-            "hash function. Just want an abnormal case here to see if any error may happen when" +
-            "doing the hive hashing"),
+             "hash function. Just want an abnormal case here to see if any error may happen when" +
+             "doing the hive hashing"),
              Collections.singletonList(""),
              null);
          ColumnVector stringResult = Hash.hiveHash(new ColumnView[]{stringListCV});
          ColumnVector stringExpected = ColumnVector.fromInts(97, 63736, -96263528, 2112075710, 0, 0);
          ColumnVector intListCV = ColumnVector.fromLists(
              new ListType(true, new BasicType(true, DType.INT32)),
-             Collections.singletonList(null),
+             Collections.emptyList(),
              Arrays.asList(0, -2, 3),
              Collections.singletonList(Integer.MAX_VALUE),
              Arrays.asList(5, -6, null),
@@ -623,15 +623,15 @@ public class HashTest {
   }
 
   @Test
-  void testHiveHashNestedType() {
+  void testHiveHashStructOfList() {
     try (ColumnVector stringListCV = ColumnVector.fromLists(
              new ListType(true, new BasicType(true, DType.STRING)),
              Arrays.asList(null, "a"),
              Arrays.asList("B\n", ""),
              Arrays.asList("dE\"\u0100\t\u0101", " \ud720\ud721"),
              Collections.singletonList("This is a long string (greater than 128 bytes/char string) case to test this " +
-            "hash function. Just want an abnormal case here to see if any error may happen when" +
-            "doing the hive hashing"),
+             "hash function. Just want an abnormal case here to see if any error may happen when" +
+             "doing the hive hashing"),
              Collections.singletonList(""),
              null);
          ColumnVector intListCV = ColumnVector.fromLists(
@@ -654,6 +654,23 @@ public class HashTest {
   }
 
   @Test
+  void testHiveHashListOfStruct() {
+    try (ColumnVector structListCV = ColumnVector.fromLists(new ListType(true, new StructType(true,
+              new BasicType(true, DType.STRING), new BasicType(true, DType.INT32), new BasicType(true, DType.FLOAT64), new BasicType(true, DType.FLOAT32), new BasicType(true, DType.BOOL8))),
+             Collections.emptyList(),
+             Collections.singletonList(new StructData("a", 0, 0.0, 0f, true)),
+             Arrays.asList(new StructData("B\n", 100, 100.0, 100f, false), new StructData("dE\"\u0100\t\u0101 \ud720\ud721", -100, -100.0, -100f, null)),
+             Collections.singletonList(new StructData("This is a long string (greater than 128 bytes/char string) case to test this " +
+             "hash function. Just want an abnormal case here to see if any error may happen when" + "doing the hive hashing", Integer.MIN_VALUE, POSITIVE_DOUBLE_NAN_LOWER_RANGE, NEGATIVE_FLOAT_NAN_LOWER_RANGE, false)),
+             Arrays.asList(new StructData(null, Integer.MAX_VALUE, POSITIVE_DOUBLE_NAN_UPPER_RANGE, NEGATIVE_FLOAT_NAN_UPPER_RANGE, true), new StructData(null, null, null, null, null)),
+             null);
+         ColumnVector result = Hash.hiveHash(new ColumnView[]{structListCV});
+         ColumnVector expected = ColumnVector.fromInts(0, 89581538, -1201635432, 1272817854, -323360610, 0)) {
+      assertColumnsAreEqual(expected, result);
+    }
+  }
+
+  @Test
   void testHiveHashNestedDepthExceedsLimit() {
     try (ColumnVector nestedIntListCV = ColumnVector.fromLists(
             new ListType(true, new ListType(true, new BasicType(true, DType.INT32))),
@@ -663,20 +680,21 @@ public class HashTest {
             Arrays.asList(Collections.singletonList(5), Arrays.asList(-6, null)),
             Arrays.asList(Collections.singletonList(Integer.MIN_VALUE), null),
             null);
-          ColumnVector integers = ColumnVector.fromBoxedInts(
+         ColumnVector integers = ColumnVector.fromBoxedInts(
             0, 100, -100, Integer.MIN_VALUE, Integer.MAX_VALUE, null);
-          ColumnVector doubles = ColumnVector.fromBoxedDoubles(0.0, 100.0, -100.0,
+         ColumnVector doubles = ColumnVector.fromBoxedDoubles(0.0, 100.0, -100.0,
             POSITIVE_DOUBLE_NAN_LOWER_RANGE, POSITIVE_DOUBLE_NAN_UPPER_RANGE, null);
-          ColumnVector floats = ColumnVector.fromBoxedFloats(0f, 100f, -100f,
+         ColumnVector floats = ColumnVector.fromBoxedFloats(0f, 100f, -100f,
             NEGATIVE_FLOAT_NAN_LOWER_RANGE, NEGATIVE_FLOAT_NAN_UPPER_RANGE, null);
-          ColumnVector bools = ColumnVector.fromBoxedBooleans(
+         ColumnVector bools = ColumnVector.fromBoxedBooleans(
             true, false, null, false, true, null);
-          ColumnView structs1 = ColumnView.makeStructView(nestedIntListCV, integers);
-          ColumnView structs2 = ColumnView.makeStructView(structs1, doubles);
-          ColumnView structs3 = ColumnView.makeStructView(structs2, bools);
-          ColumnView structs4 = ColumnView.makeStructView(structs3);
-          ColumnView structs5 = ColumnView.makeStructView(structs4, floats);
-          ColumnView nestedResult = ColumnView.makeStructView(structs5);) {
+         ColumnView structs1 = ColumnView.makeStructView(nestedIntListCV, integers);
+         ColumnView structs2 = ColumnView.makeStructView(structs1, doubles);
+         ColumnView structs3 = ColumnView.makeStructView(structs2, bools);
+         ColumnView structs4 = ColumnView.makeStructView(structs3);
+         ColumnView structs5 = ColumnView.makeStructView(structs4, floats);
+         ColumnView structs6 = ColumnView.makeStructView(structs5);
+         ColumnView nestedResult = ColumnView.makeStructView(structs6);) {
       assertThrows(CudfException.class, () -> Hash.hiveHash(new ColumnView[]{nestedResult}));
     }
   }

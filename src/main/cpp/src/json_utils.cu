@@ -67,29 +67,40 @@ constexpr bool can_be_delimiter(char c)
 
 }  // namespace
 
-std::tuple<std::unique_ptr<cudf::column>, std::unique_ptr<rmm::device_buffer>, char> concat_json(
+std::tuple<std::unique_ptr<rmm::device_buffer>, char, std::unique_ptr<cudf::column>> concat_json(
   cudf::strings_column_view const& input,
+  bool nullify_invalid_rows,
   rmm::cuda_stream_view stream,
   rmm::device_async_resource_ref mr)
 {
+  if (input.is_empty()) {
+    return {std::make_unique<rmm::device_buffer>(0, stream, mr),
+            '\n',
+            std::make_unique<cudf::column>(
+              rmm::device_uvector<bool>{0, stream, mr}, rmm::device_buffer{}, 0)};
+  }
+
   auto const d_input_ptr = cudf::column_device_view::create(input.parent(), stream);
   auto const default_mr  = rmm::mr::get_current_device_resource();
 
-  // Check if the input rows are either null, equal to `null` string literal, or empty.
-  // This will be used for masking out the input when doing string concatenation.
+  // Check if the input rows are null, empty (containing only whitespaces), and invalid JSON.
+  // This will be used for masking out the null/empty/invalid input rows when doing string
+  // concatenation.
   rmm::device_uvector<bool> is_valid_input(input.size(), stream, default_mr);
 
-  // Check if the input rows are either null or empty.
-  // This will be returned to the caller.
-  rmm::device_uvector<bool> is_null_or_empty(input.size(), stream, mr);
+  // Check if the input rows are null, empty (containing only whitespaces), and may also check
+  // for invalid JSON strings.
+  // This will be returned to the caller to create null mask for the final output.
+  rmm::device_uvector<bool> should_be_nullified(input.size(), stream, mr);
 
   thrust::for_each(
     rmm::exec_policy_nosync(stream),
     thrust::make_counting_iterator(0L),
     thrust::make_counting_iterator(input.size() * static_cast<int64_t>(cudf::detail::warp_size)),
-    [input  = *d_input_ptr,
+    [nullify_invalid_rows,
+     input  = *d_input_ptr,
      output = thrust::make_zip_iterator(thrust::make_tuple(
-       is_valid_input.begin(), is_null_or_empty.begin()))] __device__(int64_t tidx) {
+       is_valid_input.begin(), should_be_nullified.begin()))] __device__(int64_t tidx) {
       // Execute one warp per row to minimize thread divergence.
       if ((tidx % cudf::detail::warp_size) != 0) { return; }
       auto const idx = tidx / cudf::detail::warp_size;
@@ -110,28 +121,6 @@ std::tuple<std::unique_ptr<cudf::column>, std::unique_ptr<rmm::device_buffer>, c
         if (not_whitespace(ch)) { break; }
       }
 
-      if (i + 3 < size &&
-          (d_str[i] == 'n' && d_str[i + 1] == 'u' && d_str[i + 2] == 'l' && d_str[i + 3] == 'l')) {
-        i += 4;
-
-        // Skip the very last whitespace characters.
-        bool is_null_literal{true};
-        for (; i < size; ++i) {
-          ch = d_str[i];
-          if (not_whitespace(ch)) {
-            is_null_literal = false;
-            break;
-          }
-        }
-
-        // The current row contains only `null` string literal and not any other non-whitespace
-        // characters. Such rows need to be masked out as null when doing concatenation.
-        if (is_null_literal) {
-          output[idx] = thrust::make_tuple(false, false);
-          return;
-        }
-      }
-
       auto const not_eol = i < size;
 
       // If the current row is not null or empty, it should start with `{`. Otherwise, we need to
@@ -139,7 +128,7 @@ std::tuple<std::unique_ptr<cudf::column>, std::unique_ptr<rmm::device_buffer>, c
       // Note that if we want to support ARRAY schema, we need to check for `[` instead.
       auto constexpr start_character = '{';
       if (not_eol && ch != start_character) {
-        output[idx] = thrust::make_tuple(false, false);
+        output[idx] = thrust::make_tuple(false, nullify_invalid_rows);
         return;
       }
 
@@ -201,8 +190,7 @@ std::tuple<std::unique_ptr<cudf::column>, std::unique_ptr<rmm::device_buffer>, c
 
   auto [null_mask, null_count] = cudf::detail::valid_if(
     is_valid_input.begin(), is_valid_input.end(), thrust::identity{}, stream, default_mr);
-  // If the null count doesn't change, that mean we do not have any rows containing `null` string
-  // literal or empty rows. In such cases, just use the input column for concatenation.
+  // If the null count doesn't change, just use the input column for concatenation.
   auto const input_applied_null =
     null_count == input.null_count()
       ? cudf::column_view{}
@@ -211,7 +199,7 @@ std::tuple<std::unique_ptr<cudf::column>, std::unique_ptr<rmm::device_buffer>, c
                           input.chars_begin(stream),
                           reinterpret_cast<cudf::bitmask_type const*>(null_mask.data()),
                           null_count,
-                          0,
+                          input.offset(),
                           std::vector<cudf::column_view>{input.offsets()}};
 
   auto concat_strings = cudf::strings::detail::join_strings(
@@ -221,55 +209,21 @@ std::tuple<std::unique_ptr<cudf::column>, std::unique_ptr<rmm::device_buffer>, c
     stream,
     mr);
 
-  return {std::make_unique<cudf::column>(std::move(is_null_or_empty), rmm::device_buffer{}, 0),
-          std::move(concat_strings->release().data),
-          delimiter};
-}
-
-std::unique_ptr<cudf::column> make_structs(std::vector<cudf::column_view> const& children,
-                                           cudf::column_view const& is_null,
-                                           rmm::cuda_stream_view stream,
-                                           rmm::device_async_resource_ref mr)
-{
-  if (children.size() == 0) { return nullptr; }
-
-  auto const row_count = children.front().size();
-  for (auto const& col : children) {
-    CUDF_EXPECTS(col.size() == row_count, "All columns must have the same number of rows.");
-  }
-
-  auto const [null_mask, null_count] = cudf::detail::valid_if(
-    is_null.begin<bool>(), is_null.end<bool>(), thrust::logical_not{}, stream, mr);
-
-  auto const structs =
-    cudf::column_view(cudf::data_type{cudf::type_id::STRUCT},
-                      row_count,
-                      nullptr,
-                      reinterpret_cast<cudf::bitmask_type const*>(null_mask.data()),
-                      null_count,
-                      0,
-                      children);
-  return std::make_unique<cudf::column>(structs, stream, mr);
+  return {std::move(concat_strings->release().data),
+          delimiter,
+          std::make_unique<cudf::column>(std::move(should_be_nullified), rmm::device_buffer{}, 0)};
 }
 
 }  // namespace detail
 
-std::tuple<std::unique_ptr<cudf::column>, std::unique_ptr<rmm::device_buffer>, char> concat_json(
+std::tuple<std::unique_ptr<rmm::device_buffer>, char, std::unique_ptr<cudf::column>> concat_json(
   cudf::strings_column_view const& input,
+  bool nullify_invalid_rows,
   rmm::cuda_stream_view stream,
   rmm::device_async_resource_ref mr)
 {
   CUDF_FUNC_RANGE();
-  return detail::concat_json(input, stream, mr);
-}
-
-std::unique_ptr<cudf::column> make_structs(std::vector<cudf::column_view> const& children,
-                                           cudf::column_view const& is_null,
-                                           rmm::cuda_stream_view stream,
-                                           rmm::device_async_resource_ref mr)
-{
-  CUDF_FUNC_RANGE();
-  return detail::make_structs(children, is_null, stream, mr);
+  return detail::concat_json(input, nullify_invalid_rows, stream, mr);
 }
 
 }  // namespace spark_rapids_jni

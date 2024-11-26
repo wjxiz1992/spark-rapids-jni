@@ -25,14 +25,39 @@ import java.util.List;
 /**
  * A post order visitor for schemas.
  *
- * <p>
+ * <h1>Flattened Schema</h1>
  *
- * For example, if our schema consists of three fields A, B, and C with following types:
+ * A flattened schema is a schema where all fields with nested types are flattened into an array of fields. For example,
+ * for a schema with following fields:
  *
  * <ul>
  *    <li> A: <code>struct { int a1; long a2} </code> </li>
  *    <li> B: <code>list { int b1} </code> </li>
- *    <li> C: <code>string c1 </code> </li>
+ *    <li> C: <code>string </code> </li>
+ *    <li> D: <code>long </code> </li>
+ * </ul>
+ *
+ * The flattened schema will be:
+ *
+ * <ul>
+ *   <li> A: <code>struct</code> </li>
+ *   <li> A.a1: <code>int</code> </li>
+ *   <li> A.a2: <code>long</code> </li>
+ *   <li> B: <code>list</code> </li>
+ *   <li> B.b1: <code>int</code> </li>
+ *   <li> C: <code>string</code> </li>
+ *   <li> D: <code>long</code> </li>
+ * </ul>
+ *
+ * <h1>Example</h1>
+ *
+ * <p>
+ * This visitor visits each filed in the flattened schema in post order. For example, if our schema consists of three
+ * fields A, B, and C with following fields:
+ * <ul>
+ *    <li> A: <code>struct { int a1; long a2} </code> </li>
+ *    <li> B: <code>list { int b1} </code> </li>
+ *    <li> C: <code>string </code> </li>
  * </ul>
  *
  * The order of visiting will be:
@@ -43,16 +68,17 @@ import java.util.List;
  *     <li> Previsit list field B</li>
  *     <li> Visit primitive field b1</li>
  *     <li> Visit list field B with results from b1 and previsit result. </li>
- *     <li> Visit primitive field c1</li>
+ *     <li> Visit primitive field C</li>
  *     <li> Visit top schema with results from fields A, B, and C</li>
  * </ol>
  *
  * </p>
  *
  * @param <T> Return type when visiting intermediate nodes.
+ * @param <P> Return type after visiting a list schema before visiting its child.
  * @param <R> Return type after processing all children values.
  */
-public interface SchemaVisitor<T, R> {
+public interface SchemaVisitor<T, P, R> {
     /**
      * Visit the top level schema.
      * @param schema the top level schema to visit
@@ -74,7 +100,7 @@ public interface SchemaVisitor<T, R> {
      * @param listType the list schema to visit
      * @return the result of visiting the list schema
      */
-    T preVisitList(Schema listType);
+    P preVisitList(Schema listType);
 
     /**
      * Visit a list schema after visiting its child.
@@ -83,7 +109,7 @@ public interface SchemaVisitor<T, R> {
      * @param childResult the result of visiting the child
      * @return the result of visiting the list schema
      */
-    T visitList(Schema listType, T preVisitResult, T childResult);
+    T visitList(Schema listType, P preVisitResult, T childResult);
 
     /**
      * Visit a primitive type.
