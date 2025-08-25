@@ -1,4 +1,4 @@
 [submodule "thirdparty/cudf"]
 	path = thirdparty/cudf
-	url = https://github.com/ttnghia/cudf.git
-	branch = groupby_remove_sparse_result
+	url = https://github.com/wjxiz1992/cudf.git
+	branch = stddev
