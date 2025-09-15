@@ -1,4 +1,4 @@
 [submodule "thirdparty/cudf"]
 	path = thirdparty/cudf
-	url = https://github.com/rapidsai/cudf.git
-	branch = branch-25.10
+	url = https://github.com/nvdbaranec/cudf.git
+	branch = pq_string_preprocess
