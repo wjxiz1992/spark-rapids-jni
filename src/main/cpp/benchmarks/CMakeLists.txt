@@ -1,5 +1,5 @@
 #=============================================================================
-# Copyright (c) 2022-2026, NVIDIA CORPORATION.
+# Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -74,6 +74,9 @@ ConfigureBench(ROW_CONVERSION_BENCH
 
 ConfigureBench(STRING_TO_FLOAT_BENCH
   cast_string_to_float.cpp)
+
+ConfigureBench(FLOAT_TO_STRING_BENCH
+  cast_float_to_string.cpp)
 
 ConfigureBench(LONG_TO_BINARY_STRING_BENCH
   cast_long_to_binary_string.cpp)
