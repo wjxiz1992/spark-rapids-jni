@@ -203,3 +203,14 @@ TEST_F(FloatToStringTests, LegacyJavaFormattingIsJsonOnly)
 
   CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(*results, expected, verbosity);
 }
+
+TEST_F(FloatToStringTests, LegacyJavaDoubleFormattingIsJsonOnly)
+{
+  auto const doubles = cudf::test::fixed_width_column_wrapper<double>{
+    from_bits<double>(uint64_t{0xc39d'dd74'67af'36d9})};
+
+  auto const results  = spark_rapids_jni::float_to_string(doubles, cudf::get_default_stream());
+  auto const expected = cudf::test::strings_column_wrapper{"-5.380010464057565E17"};
+
+  CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(*results, expected, verbosity);
+}

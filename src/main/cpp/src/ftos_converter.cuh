@@ -1518,6 +1518,7 @@ __device__ inline void legacy_java_small_dtoa(uint64_t const fract_bits,
       // Preserve the signed-overflow behavior of the legacy JDK long/int paths.
       low = high = true;
     }
+    // FloatingDecimal appends this quotient even when this iteration first makes low true.
     mantissa = mantissa * 10 + q;
     ++digit_count;
   }
@@ -1554,7 +1555,8 @@ __device__ __noinline__ void legacy_java_big_dtoa(uint64_t const fract_bits,
   int32_t digit_count = 0;
   int q               = B.quotient_remainder_iteration(S);
   bool low            = B.compare(M) < 0;
-  bool high           = tenS.compare_sum(B, M) <= 0;
+  // Match FloatingDecimal's tenSval.addAndCmp(Bval, Mval) <= 0, including equality.
+  bool high = tenS.compare_sum(B, M) <= 0;
   if (q == 0 && !high) {
     --decimal_exponent;
   } else {
@@ -1566,8 +1568,9 @@ __device__ __noinline__ void legacy_java_big_dtoa(uint64_t const fract_bits,
   while (!low && !high) {
     q = B.quotient_remainder_iteration(S);
     M.multiply(10);
-    low      = B.compare(M) < 0;
-    high     = tenS.compare_sum(B, M) <= 0;
+    low  = B.compare(M) < 0;
+    high = tenS.compare_sum(B, M) <= 0;
+    // FloatingDecimal appends this quotient even when this iteration first makes low true.
     mantissa = mantissa * 10 + q;
     ++digit_count;
   }
