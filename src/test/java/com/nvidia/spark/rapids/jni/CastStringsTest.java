@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2026, NVIDIA CORPORATION.
+ * Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -445,6 +445,67 @@ public class CastStringsTest {
          ColumnVector result = CastStrings.fromFloat(input, true);
          ColumnVector expected = ColumnVector.fromStrings("100.0", "-4.0", "\"NaN\"",
              "\"Infinity\"", "\"-Infinity\"", "-0.0", null)) {
+      AssertUtils.assertColumnsAreEqual(expected, result);
+    }
+  }
+
+  @Test
+  void castIntegralFloatsToJsonMatchesJavaAcrossExponentRangeTest() {
+    int[] mantissas = new int[]{0, 1, 0x1f_ffff, 0x3f_ffff, 0x40_0000,
+        0x40_0001, 0x7f_fffe, 0x7f_ffff};
+    List<Float> values = new ArrayList<>();
+    List<String> expectedStrings = new ArrayList<>();
+
+    for (int exponent = 1; exponent < 0xff; ++exponent) {
+      for (int mantissa : mantissas) {
+        for (int sign = 0; sign <= 1; ++sign) {
+          float value = Float.intBitsToFloat((sign << 31) | (exponent << 23) | mantissa);
+          if (value == Math.rint(value)) {
+            values.add(value);
+            expectedStrings.add(Float.toString(value));
+          }
+        }
+      }
+    }
+
+    float[] inputValues = new float[values.size()];
+    for (int i = 0; i < values.size(); ++i) {
+      inputValues[i] = values.get(i);
+    }
+    try (ColumnVector input = ColumnVector.fromFloats(inputValues);
+         ColumnVector result = CastStrings.fromFloat(input, true);
+         ColumnVector expected = ColumnVector.fromStrings(expectedStrings.toArray(new String[0]))) {
+      AssertUtils.assertColumnsAreEqual(expected, result);
+    }
+  }
+
+  @Test
+  void castIntegralDoublesToJsonMatchesJavaAcrossExponentRangeTest() {
+    long[] mantissas = new long[]{0, 1, 0x3_ffff_ffff_ffffL, 0x7_ffff_ffff_ffffL,
+        0x8_0000_0000_0000L, 0x8_0000_0000_0001L, 0xf_ffff_ffff_fffeL,
+        0xf_ffff_ffff_ffffL};
+    List<Double> values = new ArrayList<>();
+    List<String> expectedStrings = new ArrayList<>();
+
+    for (long exponent = 1; exponent < 0x7ff; ++exponent) {
+      for (long mantissa : mantissas) {
+        for (long sign = 0; sign <= 1; ++sign) {
+          double value = Double.longBitsToDouble((sign << 63) | (exponent << 52) | mantissa);
+          if (value == Math.rint(value)) {
+            values.add(value);
+            expectedStrings.add(Double.toString(value));
+          }
+        }
+      }
+    }
+
+    double[] inputValues = new double[values.size()];
+    for (int i = 0; i < values.size(); ++i) {
+      inputValues[i] = values.get(i);
+    }
+    try (ColumnVector input = ColumnVector.fromDoubles(inputValues);
+         ColumnVector result = CastStrings.fromFloat(input, true);
+         ColumnVector expected = ColumnVector.fromStrings(expectedStrings.toArray(new String[0]))) {
       AssertUtils.assertColumnsAreEqual(expected, result);
     }
   }
