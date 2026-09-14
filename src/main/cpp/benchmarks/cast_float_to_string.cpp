@@ -23,40 +23,37 @@
 
 namespace {
 
-void run_float_to_string(nvbench::state &state, bool const json_string) {
-  auto const num_rows =
-      static_cast<cudf::size_type>(state.get_int64("num_rows"));
-  auto const type_id = static_cast<cudf::type_id>(state.get_int64("type_id"));
+void run_float_to_string(nvbench::state& state, bool const json_string)
+{
+  auto const num_rows        = static_cast<cudf::size_type>(state.get_int64("num_rows"));
+  auto const type_id         = static_cast<cudf::type_id>(state.get_int64("type_id"));
   data_profile const profile = data_profile_builder().no_validity();
-  auto const table =
-      create_random_table({type_id}, row_count{num_rows}, profile);
-  auto const stream = cudf::get_default_stream();
+  auto const table           = create_random_table({type_id}, row_count{num_rows}, profile);
+  auto const stream          = cudf::get_default_stream();
 
   state.set_cuda_stream(nvbench::make_cuda_stream_view(stream.get()));
-  state.exec(nvbench::exec_tag::sync, [&](nvbench::launch &) {
-    auto const result = spark_rapids_jni::float_to_string(
-        table->view().column(0), json_string, stream);
+  state.exec(nvbench::exec_tag::sync, [&](nvbench::launch&) {
+    auto const result =
+      spark_rapids_jni::float_to_string(table->view().column(0), json_string, stream);
   });
 }
 
-void float_to_string_ryu(nvbench::state &state) {
-  run_float_to_string(state, false);
-}
+void float_to_string_ryu(nvbench::state& state) { run_float_to_string(state, false); }
 
-void float_to_json_string_legacy_java(nvbench::state &state) {
-  run_float_to_string(state, true);
-}
+void float_to_json_string_legacy_java(nvbench::state& state) { run_float_to_string(state, true); }
 
-} // namespace
+}  // namespace
 
 NVBENCH_BENCH(float_to_string_ryu)
-    .set_name("Float to String (Ryu)")
-    .add_int64_axis("type_id", {static_cast<int64_t>(cudf::type_id::FLOAT32),
-                                static_cast<int64_t>(cudf::type_id::FLOAT64)})
-    .add_int64_axis("num_rows", {1'000'000, 10'000'000});
+  .set_name("Float to String (Ryu)")
+  .add_int64_axis("type_id",
+                  {static_cast<int64_t>(cudf::type_id::FLOAT32),
+                   static_cast<int64_t>(cudf::type_id::FLOAT64)})
+  .add_int64_axis("num_rows", {1'000'000, 10'000'000});
 
 NVBENCH_BENCH(float_to_json_string_legacy_java)
-    .set_name("Float to JSON String (legacy Java)")
-    .add_int64_axis("type_id", {static_cast<int64_t>(cudf::type_id::FLOAT32),
-                                static_cast<int64_t>(cudf::type_id::FLOAT64)})
-    .add_int64_axis("num_rows", {1'000'000, 10'000'000});
+  .set_name("Float to JSON String (legacy Java)")
+  .add_int64_axis("type_id",
+                  {static_cast<int64_t>(cudf::type_id::FLOAT32),
+                   static_cast<int64_t>(cudf::type_id::FLOAT64)})
+  .add_int64_axis("num_rows", {1'000'000, 10'000'000});
