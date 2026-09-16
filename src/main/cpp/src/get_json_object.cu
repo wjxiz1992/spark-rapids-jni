@@ -40,7 +40,6 @@
 
 #include <cuda/atomic>
 #include <cuda/functional>
-#include <cuda/std/cstddef>
 #include <cuda/std/tuple>
 #include <cuda/std/utility>
 #include <cuda/stream>
@@ -49,22 +48,8 @@
 
 #include <algorithm>
 #include <numeric>
-#include <span>
 
 namespace spark_rapids_jni {
-
-namespace {
-
-using path_spec = std::tuple<path_instruction_type, std::string, int32_t>;
-
-bool is_all_named_path(std::span<path_spec const> path)
-{
-  return !path.empty() && std::all_of(path.begin(), path.end(), [](auto const& instruction) {
-    return std::get<0>(instruction) == path_instruction_type::NAMED;
-  });
-}
-
-}  // namespace
 
 namespace detail {
 
@@ -814,45 +799,18 @@ __device__ cuda::std::pair<bool, cudf::size_type> evaluate_path(
 struct named_path_selection {
   bool valid;
   char_range value;
-  bool materialized{};
-  cudf::size_type output_size{};
 };
 
 /**
- * @brief Validate the remainder of the JSON input without writing any output.
- */
-__device__ bool validate_remaining_json(json_parser& p, int8_t* max_path_depth_exceeded)
-{
-  while (true) {
-    auto const token = p.next_token();
-    if (token == json_token::SUCCESS) { return true; }
-    if (token == json_token::ERROR) {
-      if (p.max_nesting_depth_exceeded()) { set_device_flag(max_path_depth_exceeded); }
-      return false;
-    }
-    if ((token == json_token::START_OBJECT || token == json_token::START_ARRAY) &&
-        !p.try_skip_children()) {
-      if (p.max_nesting_depth_exceeded()) { set_device_flag(max_path_depth_exceeded); }
-      return false;
-    }
-  }
-}
-
-/**
- * @brief Select a non-null terminal value for a path containing only named
- * instructions.
+ * @brief Select the last non-null occurrence of a top-level field for Spark's json_tuple.
  *
- * This scanner walks matched nested objects with a single parser and a path-depth counter. On the
- * initial FIRST_NON_NULL pass it can materialize the selected terminal directly into scratch to
- * avoid a second traversal. If trailing validation then fails, the caller discards that scratch
- * and forces an exact-size rebuild. LAST_NON_NULL and exact-size retries capture the selected
- * terminal range without writing, then replay it only after the entire JSON input is validated.
+ * Capture the value's range while validating the whole object. Only the final selection is
+ * serialized, using evaluate_path with an empty path so the existing writer and exact-size retry
+ * handle its output. Ordinary get_json_object calls do not use this scan.
  */
-__device__ named_path_selection select_named_path(json_parser& p,
-                                                  cudf::device_span<path_instruction const> path,
-                                                  named_field_match_policy match_policy,
-                                                  int8_t* max_path_depth_exceeded,
-                                                  char* out_buf)
+__device__ named_path_selection select_last_non_null(json_parser& p,
+                                                     cudf::string_view name,
+                                                     int8_t* max_path_depth_exceeded)
 {
   auto selected = char_range::null();
   auto token    = p.next_token();
@@ -861,81 +819,32 @@ __device__ named_path_selection select_named_path(json_parser& p,
     return {false, selected};
   }
 
-  if (token != json_token::START_OBJECT) {
-    if (!p.try_skip_children()) {
-      if (p.max_nesting_depth_exceeded()) { set_device_flag(max_path_depth_exceeded); }
-      return {false, selected};
-    }
-    return {validate_remaining_json(p, max_path_depth_exceeded), selected};
-  }
+  if (token != json_token::START_OBJECT) { return {false, selected}; }
 
-  cuda::std::size_t path_depth = 0;
   while (true) {
-    auto const is_name_matched = p.parse_next_token_with_matching(path[path_depth].name);
+    auto const is_name_matched = p.parse_next_token_with_matching(name);
     token                      = p.get_current_token();
-
     if (token == json_token::ERROR) {
       if (p.max_nesting_depth_exceeded()) { set_device_flag(max_path_depth_exceeded); }
       return {false, char_range::null()};
     }
-    if (token == json_token::END_OBJECT) {
-      if (path_depth == 0) {
-        return {validate_remaining_json(p, max_path_depth_exceeded), selected};
-      }
-      --path_depth;
-      continue;
-    }
+    // Spark json_tuple stops at the end of the first object.
+    if (token == json_token::END_OBJECT) { return {true, selected}; }
 
-    // The current token is a field name. Move to its value before deciding
-    // whether to descend.
     token = p.next_token();
     if (token == json_token::ERROR) {
       if (p.max_nesting_depth_exceeded()) { set_device_flag(max_path_depth_exceeded); }
       return {false, char_range::null()};
     }
-
-    auto const is_terminal_match = is_name_matched && path_depth + 1 == path.size();
-    if (is_terminal_match && token != json_token::VALUE_NULL) {
-      if (out_buf != nullptr && match_policy == named_field_match_policy::FIRST_NON_NULL) {
-        json_generator generator{};
-        bool materialization_succeeded = true;
-        if (token == json_token::VALUE_STRING) {
-          generator.write_raw(p, out_buf);
-        } else {
-          materialization_succeeded = generator.copy_current_structure(p, out_buf);
-        }
-        if (!materialization_succeeded) {
-          if (p.max_nesting_depth_exceeded()) { set_device_flag(max_path_depth_exceeded); }
-          return {false, char_range::null(), true, 0};
-        }
-
-        auto const is_valid = validate_remaining_json(p, max_path_depth_exceeded);
-        return {is_valid, char_range::null(), true, is_valid ? generator.get_output_len() : 0};
-      }
-
-      auto const value_begin = p.current_range().data();
-      if (!p.try_skip_children()) {
-        if (p.max_nesting_depth_exceeded()) { set_device_flag(max_path_depth_exceeded); }
-        return {false, char_range::null()};
-      }
-      auto const value_end_range = p.current_range();
-      auto const value_end       = value_end_range.data() + value_end_range.size();
-      selected = char_range{value_begin, static_cast<cudf::size_type>(value_end - value_begin)};
-
-      if (match_policy == named_field_match_policy::FIRST_NON_NULL) {
-        return {validate_remaining_json(p, max_path_depth_exceeded), selected};
-      }
-      continue;
-    }
-
-    if (is_name_matched && path_depth + 1 < path.size() && token == json_token::START_OBJECT) {
-      ++path_depth;
-      continue;
-    }
-
+    auto const value_begin = p.current_range().data();
     if (!p.try_skip_children()) {
       if (p.max_nesting_depth_exceeded()) { set_device_flag(max_path_depth_exceeded); }
       return {false, char_range::null()};
+    }
+    if (is_name_matched && token != json_token::VALUE_NULL) {
+      auto const value_end_range = p.current_range();
+      auto const value_end       = value_end_range.data() + value_end_range.size();
+      selected = char_range{value_begin, static_cast<cudf::size_type>(value_end - value_begin)};
     }
   }
 }
@@ -950,8 +859,6 @@ struct json_path_processing_data {
   cuda::std::pair<char const*, cudf::size_type>* out_stringviews;
   char* out_buf;
   int8_t* has_out_of_bound;
-  named_field_match_policy match_policy;
-  bool use_named_path_selection;
 };
 
 /**
@@ -973,7 +880,7 @@ struct json_path_processing_data {
  * @param max_path_depth_exceeded A marker to record if the maximum path depth has been reached
  *        during parsing the input string
  */
-template <int block_size, int min_block_per_sm>
+template <int block_size, int min_block_per_sm, bool use_last_non_null>
 __launch_bounds__(block_size, min_block_per_sm) CUDF_KERNEL
   void get_json_object_kernel(cudf::column_device_view input,
                               cudf::device_span<json_path_processing_data> path_data,
@@ -995,23 +902,10 @@ __launch_bounds__(block_size, min_block_per_sm) CUDF_KERNEL
   auto const str = input.element<cudf::string_view>(row_idx);
   if (str.size_bytes() > 0) {
     json_parser p{char_range{str}};
-    if (path.use_named_path_selection) {
-      auto const can_materialize = path.out_stringviews != nullptr &&
-                                   path.match_policy == named_field_match_policy::FIRST_NON_NULL;
-      auto const selection = select_named_path(p,
-                                               path.path_commands,
-                                               path.match_policy,
-                                               max_path_depth_exceeded,
-                                               can_materialize ? dst : nullptr);
-      if (selection.materialized) {
-        is_valid = selection.valid;
-        out_size = selection.output_size;
-        if (!is_valid) {
-          // The first pass may have written before detecting invalid trailing JSON. Rebuild this
-          // path in the isolated exact-size pass instead of consuming its scratch buffer.
-          set_device_flag(path.has_out_of_bound);
-        }
-      } else if (selection.valid && !selection.value.is_null()) {
+    if constexpr (use_last_non_null) {
+      auto const selection =
+        select_last_non_null(p, path.path_commands.front().name, max_path_depth_exceeded);
+      if (selection.valid && !selection.value.is_null()) {
         json_parser selected_parser{selection.value};
         cuda::std::tie(is_valid, out_size) =
           evaluate_path(selected_parser,
@@ -1051,6 +945,7 @@ struct kernel_launcher {
   static void exec(cudf::column_device_view const& input,
                    cudf::device_span<json_path_processing_data> path_data,
                    int8_t* max_path_depth_exceeded,
+                   bool use_last_non_null,
                    cuda::stream_ref stream)
   {
     // The optimal values for block_size and min_block_per_sm were found through testing,
@@ -1065,9 +960,16 @@ struct kernel_launcher {
       cudf::detail::warp_size;
     auto const num_blocks = cudf::util::div_rounding_up_safe(num_threads_per_row * input.size(),
                                                              static_cast<std::size_t>(block_size));
-    get_json_object_kernel<block_size, min_block_per_sm>
-      <<<num_blocks, block_size, 0, stream.get()>>>(
-        input, path_data, num_threads_per_row, max_path_depth_exceeded);
+    // Separate instantiations keep the json_tuple scan out of ordinary path-evaluation kernels.
+    if (use_last_non_null) {
+      get_json_object_kernel<block_size, min_block_per_sm, true>
+        <<<num_blocks, block_size, 0, stream.get()>>>(
+          input, path_data, num_threads_per_row, max_path_depth_exceeded);
+    } else {
+      get_json_object_kernel<block_size, min_block_per_sm, false>
+        <<<num_blocks, block_size, 0, stream.get()>>>(
+          input, path_data, num_threads_per_row, max_path_depth_exceeded);
+    }
   }
 };
 
@@ -1199,7 +1101,7 @@ std::vector<std::unique_ptr<cudf::column>> get_json_object_batch(
   std::vector<cudf::host_span<std::tuple<path_instruction_type, std::string, int32_t> const>> const&
     json_paths,
   int64_t scratch_size,
-  named_field_match_policy match_policy,
+  bool use_last_non_null,
   cuda::stream_ref stream,
   rmm::device_async_resource_ref mr)
 {
@@ -1216,18 +1118,15 @@ std::vector<std::unique_ptr<cudf::column>> get_json_object_batch(
   std::vector<rmm::device_uvector<char>> scratch_buffers;
   std::vector<rmm::device_uvector<cuda::std::pair<char const*, cudf::size_type>>> out_stringviews;
   std::vector<json_path_processing_data> h_path_data;
-  std::vector<bool> named_path_selection_flags;
   scratch_buffers.reserve(json_paths.size());
   out_stringviews.reserve(json_paths.size());
   h_path_data.reserve(json_paths.size());
-  named_path_selection_flags.reserve(json_paths.size());
 
   for (std::size_t idx = 0; idx < num_outputs; ++idx) {
     auto const& path = json_paths[idx];
     if (path.size() > MAX_JSON_PATH_DEPTH) {
       CUDF_FAIL("JSON Path has depth exceeds the maximum allowed value.");
     }
-    named_path_selection_flags.emplace_back(is_all_named_path(path));
 
     scratch_buffers.emplace_back(rmm::device_uvector<char>(scratch_size, stream));
     out_stringviews.emplace_back(rmm::device_uvector<cuda::std::pair<char const*, cudf::size_type>>{
@@ -1237,9 +1136,7 @@ std::vector<std::unique_ptr<cudf::column>> get_json_object_batch(
                                                        in_offsets,
                                                        out_stringviews.back().data(),
                                                        scratch_buffers.back().data(),
-                                                       d_error_check.data() + idx,
-                                                       match_policy,
-                                                       named_path_selection_flags.back()});
+                                                       d_error_check.data() + idx});
   }
   auto d_path_data = cudf::detail::make_device_uvector_async(
     h_path_data, stream, rmm::mr::get_current_device_resource_ref());
@@ -1249,7 +1146,7 @@ std::vector<std::unique_ptr<cudf::column>> get_json_object_batch(
     d_error_check.end(),
     0);
 
-  kernel_launcher::exec(input, d_path_data, d_max_path_depth_exceeded, stream);
+  kernel_launcher::exec(input, d_path_data, d_max_path_depth_exceeded, use_last_non_null, stream);
   auto h_error_check = cudf::detail::make_host_vector(d_error_check, stream);
   auto has_no_oob    = check_error(h_error_check);
 
@@ -1308,9 +1205,7 @@ std::vector<std::unique_ptr<cudf::column>> get_json_object_batch(
                                     out_offsets_and_sizes.back().first->view()),
                                   nullptr /*out_stringviews*/,
                                   out_char_buffers.back().data(),
-                                  d_error_check.data() + idx,
-                                  match_policy,
-                                  named_path_selection_flags[idx]});
+                                  d_error_check.data() + idx});
     } else {
       no_oob_indices.emplace_back(idx);
       batch_stringviews.emplace_back(out_sview);
@@ -1336,7 +1231,7 @@ std::vector<std::unique_ptr<cudf::column>> get_json_object_batch(
     d_error_check.begin(),
     d_error_check.end(),
     0);
-  kernel_launcher::exec(input, d_path_data, d_max_path_depth_exceeded, stream);
+  kernel_launcher::exec(input, d_path_data, d_max_path_depth_exceeded, use_last_non_null, stream);
   h_error_check = cudf::detail::make_host_vector(d_error_check, stream);
   has_no_oob    = check_error(h_error_check);
 
@@ -1362,7 +1257,7 @@ std::vector<std::unique_ptr<cudf::column>> get_json_object(
     json_paths,
   int64_t memory_budget_bytes,
   int32_t parallel_override,
-  named_field_match_policy match_policy,
+  bool use_last_non_null,
   cuda::stream_ref stream,
   rmm::device_async_resource_ref mr)
 {
@@ -1423,7 +1318,7 @@ std::vector<std::unique_ptr<cudf::column>> get_json_object(
       }
     }
     auto tmp = get_json_object_batch(
-      *d_input_ptr, in_offsets, batch, scratch_size, match_policy, stream, mr);
+      *d_input_ptr, in_offsets, batch, scratch_size, use_last_non_null, stream, mr);
     for (std::size_t i = 0; i < tmp.size(); i++) {
       std::size_t out_i = output_ids[i];
       output[out_i]     = std::move(tmp[i]);
@@ -1443,9 +1338,7 @@ std::unique_ptr<cudf::column> get_json_object(
 {
   SRJ_FUNC_RANGE();
   return std::move(
-    detail::get_json_object(
-      input, {instructions}, -1, -1, named_field_match_policy::FIRST_NON_NULL, stream, mr)
-      .front());
+    detail::get_json_object(input, {instructions}, -1, -1, false, stream, mr).front());
 }
 
 std::vector<std::unique_ptr<cudf::column>> get_json_object_multiple_paths(
@@ -1458,13 +1351,8 @@ std::vector<std::unique_ptr<cudf::column>> get_json_object_multiple_paths(
   rmm::device_async_resource_ref mr)
 {
   SRJ_FUNC_RANGE();
-  return detail::get_json_object(input,
-                                 json_paths,
-                                 memory_budget_bytes,
-                                 parallel_override,
-                                 named_field_match_policy::FIRST_NON_NULL,
-                                 stream,
-                                 mr);
+  return detail::get_json_object(
+    input, json_paths, memory_budget_bytes, parallel_override, false, stream, mr);
 }
 
 std::vector<std::unique_ptr<cudf::column>> get_json_object_multiple_paths(
@@ -1478,27 +1366,17 @@ std::vector<std::unique_ptr<cudf::column>> get_json_object_multiple_paths(
   rmm::device_async_resource_ref mr)
 {
   SRJ_FUNC_RANGE();
-  CUDF_EXPECTS(match_policy == named_field_match_policy::FIRST_NON_NULL ||
-                 match_policy == named_field_match_policy::LAST_NON_NULL,
+  CUDF_EXPECTS(match_policy == named_field_match_policy::LAST_NON_NULL,
                "Invalid named-field match policy.");
-  if (match_policy == named_field_match_policy::FIRST_NON_NULL) {
-    CUDF_EXPECTS(std::all_of(json_paths.begin(),
-                             json_paths.end(),
-                             [](auto const& path) { return is_all_named_path(path); }),
-                 "FIRST_NON_NULL requires non-empty paths containing only "
-                 "named instructions.");
-  } else {
-    CUDF_EXPECTS(std::all_of(json_paths.begin(),
-                             json_paths.end(),
-                             [](auto const& path) {
-                               return path.size() == 1 &&
-                                      std::get<0>(path.front()) == path_instruction_type::NAMED;
-                             }),
-                 "LAST_NON_NULL requires paths containing exactly one named "
-                 "instruction.");
-  }
+  CUDF_EXPECTS(std::all_of(json_paths.begin(),
+                           json_paths.end(),
+                           [](auto const& path) {
+                             return path.size() == 1 &&
+                                    std::get<0>(path.front()) == path_instruction_type::NAMED;
+                           }),
+               "LAST_NON_NULL requires paths containing exactly one named instruction.");
   return detail::get_json_object(
-    input, json_paths, memory_budget_bytes, parallel_override, match_policy, stream, mr);
+    input, json_paths, memory_budget_bytes, parallel_override, true, stream, mr);
 }
 
 }  // namespace spark_rapids_jni

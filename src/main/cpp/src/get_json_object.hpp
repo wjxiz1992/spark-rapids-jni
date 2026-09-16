@@ -42,9 +42,9 @@ constexpr int MAX_JSON_PATH_DEPTH = 16;
 enum class path_instruction_type : int8_t { WILDCARD, INDEX, NAMED };
 
 /**
- * @brief Policy for selecting a matching named field when an object contains duplicate keys.
+ * @brief Additional named-field selection policy for Spark json_tuple.
  */
-enum class named_field_match_policy : int32_t { FIRST_NON_NULL = 0, LAST_NON_NULL = 1 };
+enum class named_field_match_policy : int32_t { LAST_NON_NULL = 1 };
 
 /**
  * @brief Extract JSON object from a JSON string based on the specified JSON path.
@@ -83,9 +83,9 @@ std::vector<std::unique_ptr<cudf::column>> get_json_object_multiple_paths(
 /**
  * @brief Extract multiple JSON objects using the specified named-field match policy.
  *
- * `FIRST_NON_NULL` requires every path to be non-empty and contain only `NAMED` instructions.
- * `LAST_NON_NULL` requires every path to contain exactly one `NAMED` instruction. Use the overload
- * without `match_policy` for legacy `INDEX` and `WILDCARD` path handling.
+ * `LAST_NON_NULL` selects the last non-null occurrence of each top-level named field, as required
+ * by Spark json_tuple. Every path must contain exactly one `NAMED` instruction. Use the overload
+ * without `match_policy` for ordinary get_json_object path evaluation.
  *
  * @throw cudf::logic_error If `match_policy` is invalid or a path shape is unsupported by it
  * @param[in] input The input string column to parse JSON from

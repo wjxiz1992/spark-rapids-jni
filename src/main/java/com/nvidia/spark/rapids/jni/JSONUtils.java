@@ -34,13 +34,11 @@ public class JSONUtils {
   }
 
   /**
-   * Policy for selecting a matching named field when a JSON object contains duplicate keys.
-   * Explicit {@link #FIRST_NON_NULL} selection requires non-empty paths containing only
-   * {@link PathInstructionType#NAMED} instructions. {@link #LAST_NON_NULL} requires paths
-   * containing exactly one {@code NAMED} instruction.
+   * Additional named-field selection policy for Spark json_tuple.
+   * {@link #LAST_NON_NULL} selects the last non-null occurrence of a top-level field and
+   * requires paths containing exactly one {@code NAMED} instruction.
    */
   public enum NamedFieldMatchPolicy {
-    FIRST_NON_NULL(0),
     LAST_NON_NULL(1);
 
     private final int nativeId;
@@ -108,9 +106,8 @@ public class JSONUtils {
 
   /**
    * Extract multiple JSON paths from a JSON column using the requested named-field match policy.
-   * {@link NamedFieldMatchPolicy#FIRST_NON_NULL} supports non-empty paths containing only
-   * {@link PathInstructionType#NAMED} instructions. {@link NamedFieldMatchPolicy#LAST_NON_NULL}
-   * supports paths containing exactly one {@code NAMED} instruction.
+   * {@link NamedFieldMatchPolicy#LAST_NON_NULL} supports paths containing exactly one
+   * {@code NAMED} instruction and implements Spark json_tuple field selection.
    *
    * @param input the string column containing JSON
    * @param paths the instructions for multiple paths
@@ -144,15 +141,13 @@ public class JSONUtils {
                                                           long memoryBudgetBytes,
                                                           int parallelOverride) {
     return getJsonObjectMultiplePathsInternal(
-        input, paths, memoryBudgetBytes, parallelOverride,
-        NamedFieldMatchPolicy.FIRST_NON_NULL, false);
+        input, paths, memoryBudgetBytes, parallelOverride, null);
   }
 
   /**
    * Extract multiple JSON paths from a JSON column using the requested named-field match policy.
-   * {@link NamedFieldMatchPolicy#FIRST_NON_NULL} supports non-empty paths containing only
-   * {@link PathInstructionType#NAMED} instructions. {@link NamedFieldMatchPolicy#LAST_NON_NULL}
-   * supports paths containing exactly one {@code NAMED} instruction.
+   * {@link NamedFieldMatchPolicy#LAST_NON_NULL} supports paths containing exactly one
+   * {@code NAMED} instruction and implements Spark json_tuple field selection.
    *
    * @param input the string column containing JSON
    * @param paths the instructions for multiple paths
@@ -170,23 +165,12 @@ public class JSONUtils {
       long memoryBudgetBytes,
       int parallelOverride,
       NamedFieldMatchPolicy matchPolicy) {
-    return getJsonObjectMultiplePathsInternal(
-        input, paths, memoryBudgetBytes, parallelOverride, matchPolicy, true);
-  }
-
-  private static void validateFirstNonNullPaths(List<List<PathInstructionJni>> paths) {
-    for (List<PathInstructionJni> path : paths) {
-      if (path.isEmpty()) {
-        throw new IllegalArgumentException(
-            "FIRST_NON_NULL requires non-empty paths containing only named instructions");
-      }
-      for (PathInstructionJni instruction : path) {
-        if (instruction.type != (byte) PathInstructionType.NAMED.ordinal()) {
-          throw new IllegalArgumentException(
-              "FIRST_NON_NULL requires non-empty paths containing only named instructions");
-        }
-      }
+    if (matchPolicy == null) {
+      throw new IllegalArgumentException("matchPolicy must not be null");
     }
+    validateLastNonNullPaths(paths);
+    return getJsonObjectMultiplePathsInternal(
+        input, paths, memoryBudgetBytes, parallelOverride, matchPolicy);
   }
 
   private static void validateLastNonNullPaths(List<List<PathInstructionJni>> paths) {
@@ -199,32 +183,13 @@ public class JSONUtils {
     }
   }
 
-  private static void validateMatchPolicyPaths(
-      List<List<PathInstructionJni>> paths,
-      NamedFieldMatchPolicy matchPolicy,
-      boolean useMatchPolicyNative) {
-    if (!useMatchPolicyNative) {
-      return;
-    }
-    if (matchPolicy == NamedFieldMatchPolicy.FIRST_NON_NULL) {
-      validateFirstNonNullPaths(paths);
-    } else if (matchPolicy == NamedFieldMatchPolicy.LAST_NON_NULL) {
-      validateLastNonNullPaths(paths);
-    }
-  }
-
   private static ColumnVector[] getJsonObjectMultiplePathsInternal(
       ColumnVector input,
       List<List<PathInstructionJni>> paths,
       long memoryBudgetBytes,
       int parallelOverride,
-      NamedFieldMatchPolicy matchPolicy,
-      boolean useMatchPolicyNative) {
+      NamedFieldMatchPolicy matchPolicy) {
     assert (input.getType().equals(DType.STRING)) : "Input must be of STRING type";
-    if (matchPolicy == null) {
-      throw new IllegalArgumentException("matchPolicy must not be null");
-    }
-    validateMatchPolicyPaths(paths, matchPolicy, useMatchPolicyNative);
     int[] pathOffsets = new int[paths.size() + 1];
     int offset = 0;
     for (int i = 0; i < paths.size(); i++) {
@@ -246,7 +211,7 @@ public class JSONUtils {
       }
     }
     long[] ptrs;
-    if (useMatchPolicyNative) {
+    if (matchPolicy != null) {
       ptrs = getJsonObjectMultiplePathsWithMatchPolicy(input.getNativeView(), typeNums,
           names, indexes, pathOffsets, memoryBudgetBytes, parallelOverride, matchPolicy.nativeId);
     } else {

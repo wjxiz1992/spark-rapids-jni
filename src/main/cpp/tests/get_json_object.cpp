@@ -54,10 +54,16 @@ TEST_F(GetJsonObjectTest, RejectsInvalidNamedFieldMatchContracts)
       input, named_paths, -1, -1, static_cast<spark_rapids_jni::named_field_match_policy>(2)),
     cudf::logic_error);
 
+  std::vector<std::vector<path_spec>> const empty_paths{{}};
+  EXPECT_THROW(
+    spark_rapids_jni::get_json_object_multiple_paths(
+      input, empty_paths, -1, -1, spark_rapids_jni::named_field_match_policy::LAST_NON_NULL),
+    cudf::logic_error);
+
   std::vector<std::vector<path_spec>> const wildcard_paths{{wildcard_path()}};
   EXPECT_THROW(
     spark_rapids_jni::get_json_object_multiple_paths(
-      input, wildcard_paths, -1, -1, spark_rapids_jni::named_field_match_policy::FIRST_NON_NULL),
+      input, wildcard_paths, -1, -1, spark_rapids_jni::named_field_match_policy::LAST_NON_NULL),
     cudf::logic_error);
 
   std::vector<std::vector<path_spec>> const nested_paths{{named_path("a"), named_path("b")}};

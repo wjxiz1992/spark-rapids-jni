@@ -646,43 +646,35 @@ public class GetJsonObjectTest {
   }
 
   @Test
-  void getJsonObjectDuplicateNamedFieldsTest() {
-    JSONUtils.PathInstructionJni[] path = new JSONUtils.PathInstructionJni[] {
-        namedPath("k") };
-    List<List<JSONUtils.PathInstructionJni>> paths = Arrays.asList(Arrays.asList(path[0]));
+  void getJsonObjectLastNonNullFieldsTest() {
+    List<List<JSONUtils.PathInstructionJni>> paths = Arrays.asList(Arrays.asList(namedPath("k")));
+    // Spark json_tuple keeps the last non-null value, including an empty string or container.
     try (ColumnVector input = ColumnVector.fromStrings(
         "{\"k\":\"first\",\"k\":\"last\"}",
         "{\"k\":null,\"k\":\"value\"}",
         "{\"k\":\"value\",\"k\":null}",
         "{\"k\":null,\"k\":null}",
+        "{\"k\":1,\"k\":false}",
+        "{\"k\":\"value\",\"k\":\"\"}",
+        "{\"k\":\"value\",\"k\":[]}",
+        "{\"k\":\"value\",\"k\":{}}",
+        "{\"k\":{\"nested\":1},\"other\":{\"k\":\"ignored\"}}",
+        "{\"other\":{\"k\":\"ignored\"}}",
         "{\"k\":\"value\",\"broken\":}",
-        (String) null);
-         ColumnVector expectedFirst = ColumnVector.fromStrings(
-             "first", "value", "value", null, null, null);
-         ColumnVector expectedLast = ColumnVector.fromStrings(
-             "last", "value", "value", null, null, null);
-         ColumnVector actualFirst = JSONUtils.getJsonObject(input, path)) {
-      assertColumnsAreEqual(expectedFirst, actualFirst);
-      ColumnVector[] actualExplicitFirst = JSONUtils.getJsonObjectMultiplePaths(
-          input, paths, JSONUtils.NamedFieldMatchPolicy.FIRST_NON_NULL);
-      try {
-        assertColumnsAreEqual(expectedFirst, actualExplicitFirst[0]);
-      } finally {
-        actualExplicitFirst[0].close();
-      }
-      ColumnVector[] actualLegacyFirst = JSONUtils.getJsonObjectMultiplePaths(
-          input, paths, -1, -1);
-      try {
-        assertColumnsAreEqual(expectedFirst, actualLegacyFirst[0]);
-      } finally {
-        actualLegacyFirst[0].close();
-      }
-      ColumnVector[] actualLast = JSONUtils.getJsonObjectMultiplePaths(
+        "[]", "null", "", (String) null,
+        "{\"k\":\"value\"} garbage",
+        "{\"k\":\"value\"} {\"broken\":}",
+        "{\"k\":\"value\",\"other\":[1,]}",
+        "{\"k\":\"value\",\"k\":");
+         ColumnVector expected = ColumnVector.fromStrings(
+             "last", "value", "value", null, "false", "", "[]", "{}", "{\"nested\":1}",
+             null, null, null, null, null, null, "value", "value", null, null)) {
+      ColumnVector[] actual = JSONUtils.getJsonObjectMultiplePaths(
           input, paths, JSONUtils.NamedFieldMatchPolicy.LAST_NON_NULL);
       try {
-        assertColumnsAreEqual(expectedLast, actualLast[0]);
+        assertColumnsAreEqual(expected, actual[0]);
       } finally {
-        actualLast[0].close();
+        actual[0].close();
       }
     }
   }
@@ -694,35 +686,24 @@ public class GetJsonObjectTest {
         namedPath(pathName) };
     List<List<JSONUtils.PathInstructionJni>> paths = Arrays.asList(Arrays.asList(path[0]));
     try (ColumnVector input = ColumnVector.fromStrings(
-        "{\"a\":\"wrong\",\"a\\u0000b\":\"right\"}");
-         ColumnVector expected = ColumnVector.fromStrings("right");
+        "{\"a\":\"wrong\",\"a\\u0000b\":\"right\"}", null);
+         ColumnVector expected = ColumnVector.fromStrings("right", null);
          ColumnVector actual = JSONUtils.getJsonObject(input, path)) {
       assertColumnsAreEqual(expected, actual);
       ColumnVector[] actualMultiple = JSONUtils.getJsonObjectMultiplePaths(
-          input, paths, JSONUtils.NamedFieldMatchPolicy.FIRST_NON_NULL);
+          input, paths);
       try {
         assertColumnsAreEqual(expected, actualMultiple[0]);
       } finally {
         actualMultiple[0].close();
       }
-    }
-  }
-
-  @Test
-  void getJsonObjectNestedDuplicateNamedFieldsTest() {
-    JSONUtils.PathInstructionJni[] path = new JSONUtils.PathInstructionJni[] {
-        namedPath("a"), namedPath("b") };
-    String longMissingValue = repeat("\n", 512);
-    try (ColumnVector input = ColumnVector.fromStrings(
-        "{\"a\":{\"b\":null},\"a\":{\"b\":\"later\"}}",
-        "{\"a\":{\"missing\":\"x\"},\"a\":{\"b\":\"fallback\"}}",
-        "{\"a\":{\"b\":\"inner-first\",\"b\":\"inner-last\"},\"a\":{\"b\":\"outer-last\"}}",
-        "{\"a\":null,\"a\":{\"b\":\"nonnull\"}}",
-        "{\"a\":{\"missing\":[\"" + longMissingValue + "\"]},\"a\":{\"b\":\"ok\"}}");
-         ColumnVector expected = ColumnVector.fromStrings(
-             "later", "fallback", "inner-first", "nonnull", "ok");
-         ColumnVector actual = JSONUtils.getJsonObject(input, path)) {
-      assertColumnsAreEqual(expected, actual);
+      ColumnVector[] actualLast = JSONUtils.getJsonObjectMultiplePaths(
+          input, paths, JSONUtils.NamedFieldMatchPolicy.LAST_NON_NULL);
+      try {
+        assertColumnsAreEqual(expected, actualLast[0]);
+      } finally {
+        actualLast[0].close();
+      }
     }
   }
 
@@ -747,55 +728,21 @@ public class GetJsonObjectTest {
   }
 
   @Test
-  void getJsonObjectFirstNonNullLongOutputRebuildTest() {
-    List<List<JSONUtils.PathInstructionJni>> paths = Arrays.asList(
-        Arrays.asList(namedPath("k")));
-    String controls = repeat("\n", 512);
-    String longOutput = "[\"" + repeat("\\n", 512) + "\"]";
-
-    try (ColumnVector input = ColumnVector.fromStrings(
-        "{\"k\":[\"" + controls + "\"],\"broken\":}",
-        "{\"k\":\"sentinel\"}");
-         ColumnVector expected = ColumnVector.fromStrings(null, "sentinel")) {
-      ColumnVector[] actual = JSONUtils.getJsonObjectMultiplePaths(
-          input, paths, JSONUtils.NamedFieldMatchPolicy.FIRST_NON_NULL);
-      try {
-        assertColumnsAreEqual(expected, actual[0]);
-      } finally {
-        actual[0].close();
-      }
-    }
-
-    try (ColumnVector input = ColumnVector.fromStrings(
-        "{\"k\":null,\"k\":[\"" + controls + "\"]}",
-        "{\"k\":\"sentinel\"}");
-         ColumnVector expected = ColumnVector.fromStrings(longOutput, "sentinel")) {
-      ColumnVector[] actual = JSONUtils.getJsonObjectMultiplePaths(
-          input, paths, JSONUtils.NamedFieldMatchPolicy.FIRST_NON_NULL);
-      try {
-        assertColumnsAreEqual(expected, actual[0]);
-      } finally {
-        actual[0].close();
-      }
-    }
-  }
-
-  @Test
   void getJsonObjectMultiplePathsLastNonNullTest() {
     List<List<JSONUtils.PathInstructionJni>> paths = Arrays.asList(
-        Arrays.asList(namedPath("k0")),
         Arrays.asList(namedPath("k1")),
-        Arrays.asList(namedPath("k0")));
+        Arrays.asList(namedPath("k0")),
+        Arrays.asList(namedPath("k1")));
     try (ColumnVector input = ColumnVector.fromStrings(
         "{\"k0\":\"first0\",\"k0\":\"last0\",\"k1\":null,\"k1\":\"last1\"}");
          ColumnVector expected0 = ColumnVector.fromStrings("last0");
          ColumnVector expected1 = ColumnVector.fromStrings("last1")) {
       ColumnVector[] output = JSONUtils.getJsonObjectMultiplePaths(
-          input, paths, -1, -1, JSONUtils.NamedFieldMatchPolicy.LAST_NON_NULL);
+          input, paths, -1, 1, JSONUtils.NamedFieldMatchPolicy.LAST_NON_NULL);
       try {
-        assertColumnsAreEqual(expected0, output[0]);
-        assertColumnsAreEqual(expected1, output[1]);
-        assertColumnsAreEqual(expected0, output[2]);
+        assertColumnsAreEqual(expected1, output[0]);
+        assertColumnsAreEqual(expected0, output[1]);
+        assertColumnsAreEqual(expected1, output[2]);
       } finally {
         for (ColumnVector cv : output) {
           cv.close();
@@ -814,9 +761,7 @@ public class GetJsonObjectTest {
         Collections.singletonList(Collections.emptyList());
     try (ColumnVector input = ColumnVector.fromStrings("{\"a\":{\"b\":\"value\"}}")) {
       assertThrows(IllegalArgumentException.class, () -> JSONUtils.getJsonObjectMultiplePaths(
-          input, wildcardPaths, JSONUtils.NamedFieldMatchPolicy.FIRST_NON_NULL));
-      assertThrows(IllegalArgumentException.class, () -> JSONUtils.getJsonObjectMultiplePaths(
-          input, emptyPaths, JSONUtils.NamedFieldMatchPolicy.FIRST_NON_NULL));
+          input, emptyPaths, JSONUtils.NamedFieldMatchPolicy.LAST_NON_NULL));
       assertThrows(IllegalArgumentException.class, () -> JSONUtils.getJsonObjectMultiplePaths(
           input, nestedPaths, JSONUtils.NamedFieldMatchPolicy.LAST_NON_NULL));
       assertThrows(IllegalArgumentException.class, () -> JSONUtils.getJsonObjectMultiplePaths(
