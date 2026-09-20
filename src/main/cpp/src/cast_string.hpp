@@ -123,9 +123,11 @@ std::unique_ptr<cudf::column> string_to_decimal(
  * @param[in] json_quote_counts Number of quote characters in each original JSON value. The span
  *                              must be empty for ordinary CAST or contain one entry per input row.
  *                              Quoted or valid unquoted JSON zeros remain zero when their exponent
- *                              and resulting java.math.BigDecimal scale fit a signed Java int,
+ *                              is in the inclusive range [-Integer.MAX_VALUE, Integer.MAX_VALUE]
+ *                              and the resulting java.math.BigDecimal scale fits a signed Java int,
  *                              including when applying the exponent would overflow the int decimal
- *                              location.
+ *                              location. Integer.MIN_VALUE is not accepted as an exponent because
+ *                              its negation is not representable as a signed Java int.
  * @param[in] stream Stream on which to operate.
  * @param[in] mr Memory resource for returned column.
  * @return std::unique_ptr<column> Decimal column that was created from string_col.
