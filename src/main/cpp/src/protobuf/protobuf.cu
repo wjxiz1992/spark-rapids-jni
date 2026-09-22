@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2026, NVIDIA CORPORATION.
+ * Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -434,13 +434,11 @@ std::unique_ptr<cudf::column> decode_protobuf_to_struct(cudf::column_view const&
   // PERMISSIVE-mode row nulling support for malformed input, root enum mismatches, and missing
   // required fields.
   bool const track_permissive_null_rows = !fail_on_errors;
-  rmm::device_uvector<bool> d_row_force_null(
-    track_permissive_null_rows ? num_rows : 0, stream, scratch_mr);
-  if (track_permissive_null_rows) {
-    CUDF_CUDA_TRY(
-      cudaMemsetAsync(d_row_force_null.data(), 0, num_rows * sizeof(bool), stream.get()));
-  }
-  auto const decode_ctx        = protobuf_decode_runtime_context{&d_row_force_null, &d_error};
+  auto const num_flags = static_cast<std::size_t>(track_permissive_null_rows ? num_rows : 0);
+  auto d_row_force_null_storage = make_zeroed_atomic_flag_buffer(num_flags, stream, scratch_mr);
+  auto const d_row_force_null =
+    cudf::device_span<bool>{static_cast<bool*>(d_row_force_null_storage.data()), num_flags};
+  auto const decode_ctx        = protobuf_decode_runtime_context{d_row_force_null, &d_error};
   auto const recursive_context = recursive_decode_context{schema_context, decode_ctx};
 
   auto const threads = THREADS_PER_BLOCK;
@@ -489,7 +487,7 @@ std::unique_ptr<cudf::column> decode_protobuf_to_struct(cudf::column_view const&
                                     .direct_size = static_cast<int>(h_field_lookup.size())}},
       d_error.data(),
       d_deferred_enum_error.data(),
-      track_permissive_null_rows ? d_row_force_null.data() : nullptr,
+      d_row_force_null.data(),
       stream);
   }
 
@@ -551,7 +549,7 @@ std::unique_ptr<cudf::column> decode_protobuf_to_struct(cudf::column_view const&
                                                   .direct_size = static_cast<int>(h_field_lookup.size())}},
       d_error.data(),
       d_deferred_enum_error.data(),
-      track_permissive_null_rows ? d_row_force_null.data() : nullptr,
+      d_row_force_null.data(),
       stream);
 
     // Required-field validation applies to all scalar leaves, not just top-level numerics.
@@ -890,9 +888,8 @@ std::unique_ptr<cudf::column> decode_protobuf_to_struct(cudf::column_view const&
     auto [mask, null_count] = cudf::detail::valid_if(
       thrust::make_counting_iterator<cudf::size_type>(0),
       thrust::make_counting_iterator<cudf::size_type>(num_rows),
-      [row_invalid = track_permissive_null_rows ? d_row_force_null.data() : nullptr,
-       input_mask,
-       input_offset] __device__(cudf::size_type row) {
+      [row_invalid = d_row_force_null.data(), input_mask, input_offset] __device__(
+        cudf::size_type row) {
         if (input_mask != nullptr && !cudf::bit_is_set(input_mask, input_offset + row)) {
           return false;
         }
