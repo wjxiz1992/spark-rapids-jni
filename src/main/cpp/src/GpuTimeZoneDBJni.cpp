@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2026, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -194,6 +194,65 @@ JNIEXPORT jlong JNICALL Java_com_nvidia_spark_rapids_jni_GpuTimeZoneDB_convertOr
     auto const reader = spark_rapids_jni::orc_tz_side{
       reader_tz_info_tab, reader_tz_initial_offset, reader_tz_raw_offset, reader_dst};
     return cudf::jni::release_as_jlong(spark_rapids_jni::convert_orc_from_utc(*input, reader));
+  }
+  JNI_CATCH(env, 0);
+}
+
+JNIEXPORT jlong JNICALL Java_com_nvidia_spark_rapids_jni_GpuTimeZoneDB_convertOrcToSparkWithRules(
+  JNIEnv* env,
+  jclass,
+  jlong input_handle,
+  jint input_kind,
+  jlong writer_tz_offset_at_orc_2015_base_us,
+  jlong writer_tz_info_table,
+  jint writer_tz_initial_offset,
+  jint writer_tz_raw_offset,
+  jintArray writer_dst_rule,
+  jlong reader_tz_info_table,
+  jint reader_tz_initial_offset,
+  jint reader_tz_raw_offset,
+  jintArray reader_dst_rule,
+  jboolean writer_reader_rules_differ,
+  jlong java_time_info_table,
+  jint java_time_tz_index,
+  jlong reader_historical_difference_end_utc_us,
+  jlong reader_historical_difference_end_local_us)
+{
+  JNI_NULL_CHECK(env, input_handle, "input column is null", 0);
+
+  JNI_TRY
+  {
+    cudf::jni::auto_set_device(env);
+    auto const input              = std::bit_cast<cudf::column_view const*>(input_handle);
+    auto const writer_tz_info_tab = std::bit_cast<cudf::table_view const*>(writer_tz_info_table);
+    auto const reader_tz_info_tab = std::bit_cast<cudf::table_view const*>(reader_tz_info_table);
+    auto const java_time_info_tab = std::bit_cast<cudf::table_view const*>(java_time_info_table);
+    auto const writer_dst         = parse_dst_rule(env, writer_dst_rule);
+    cudf::jni::check_java_exception(env);
+    auto const reader_dst = parse_dst_rule(env, reader_dst_rule);
+    cudf::jni::check_java_exception(env);
+
+    auto const writer = spark_rapids_jni::orc_tz_side{
+      writer_tz_info_tab, writer_tz_initial_offset, writer_tz_raw_offset, writer_dst};
+    auto const reader = spark_rapids_jni::orc_tz_side{
+      reader_tz_info_tab, reader_tz_initial_offset, reader_tz_raw_offset, reader_dst};
+    auto const options = spark_rapids_jni::orc_to_spark_options{
+      .reader_historical_difference_end_utc_us =
+        static_cast<int64_t>(reader_historical_difference_end_utc_us),
+      .reader_historical_difference_end_local_us =
+        static_cast<int64_t>(reader_historical_difference_end_local_us),
+      .input_kind                 = static_cast<spark_rapids_jni::orc_timestamp_kind>(input_kind),
+      .writer_reader_rules_differ = static_cast<bool>(writer_reader_rules_differ)};
+    return cudf::jni::release_as_jlong(spark_rapids_jni::convert_orc_to_spark(
+      *input,
+      static_cast<int64_t>(writer_tz_offset_at_orc_2015_base_us),
+      writer,
+      reader,
+      java_time_info_tab,
+      static_cast<cudf::size_type>(java_time_tz_index),
+      options,
+      cudf::get_default_stream(),
+      cudf::get_current_device_resource_ref()));
   }
   JNI_CATCH(env, 0);
 }
