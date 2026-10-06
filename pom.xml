@@ -21,7 +21,7 @@
 
   <groupId>com.nvidia</groupId>
   <artifactId>cudf-spark-jni</artifactId>
-  <version>26.10.0-SNAPSHOT</version>
+  <version>26.12.0-SNAPSHOT</version>
   <packaging>jar</packaging>
   <name>NVIDIA cuDF plugin JNI for Apache Spark</name>
   <description>
@@ -393,9 +393,19 @@
               <skip>${submodule.check.skip}</skip>
               <target>
                 <exec dir="${project.basedir}"
-                      failonerror="true"
+                      failonerror="false"
+                      resultproperty="submodule.check.exit.code"
+                      outputproperty="submodule.check.output"
+                      errorproperty="submodule.check.error"
                       executable="${project.basedir}/build/submodule-check">
                 </exec>
+                <fail message="Submodule check failed with exit code ${submodule.check.exit.code}: ${submodule.check.error}${line.separator}${submodule.check.output}">
+                  <condition>
+                    <not>
+                      <equals arg1="${submodule.check.exit.code}" arg2="0"/>
+                    </not>
+                  </condition>
+                </fail>
               </target>
             </configuration>
             <goals>

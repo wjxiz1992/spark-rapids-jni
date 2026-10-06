@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.
+# Copyright (c) 2025-2026, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -60,3 +60,6 @@ jobs:
           expect_redaction 'a[b]' 'a[b]c#d' 'username=a[b] password=a[b]c#d' 'username=**** password=****'
           encoded=$(printf '%s:%s' abc YWJj | base64 -w 0)
           expect_redaction abc YWJj "Authorization: Basic $encoded" 'Authorization: Basic ****'
+
+      - name: Run Git network retry regression tests
+        run: ci/test-retry-git-network.sh

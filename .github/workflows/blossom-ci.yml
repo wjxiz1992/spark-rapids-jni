@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2026, NVIDIA CORPORATION.
+# Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -47,6 +47,7 @@ jobs:
         github.actor == 'hyperbolic2346' ||
         github.actor == 'igorpeshansky' ||
         github.actor == 'jihoonson' ||
+        github.actor == 'KyleFromNVIDIA' ||
         github.actor == 'liurenjie1024' ||
         github.actor == 'mythrocks' ||
         github.actor == 'nartal1' ||
@@ -94,7 +95,7 @@ jobs:
       - name: Setup java
         uses: actions/setup-java@v5
         with:
-          distribution: adopt
+          distribution: temurin
           java-version: 8
 
       # add blackduck properties https://synopsys.atlassian.net/wiki/spaces/INTDOCS/pages/631308372/Methods+for+Configuring+Analysis#Using-a-configuration-file
