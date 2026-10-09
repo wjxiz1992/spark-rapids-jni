@@ -386,10 +386,20 @@ public class CastStringsTest {
   @Test
   void castZeroWithExponentOverflowRemainsNull() {
     try (ColumnVector input = ColumnVector.fromStrings(
-             "0.0E57", "0E2147483646", "0E2147483647", "0E2147483648",
+             "0.0E57", "0E2147483646", "0E2147483648",
              "0E-2147483648", "0.0E-2147483647", "0E ", "0E+ ", "0E- ");
          ColumnVector actual = CastStrings.toDecimal(input, false, 10, 0)) {
       assertEquals(input.getRowCount(), actual.getNullCount());
+    }
+  }
+
+  @Test
+  void castZeroAtMaxExponentDocumentsCpuDifference() {
+    // Spark 3.3 CPU CAST(0E2147483647 AS DECIMAL(10, 0)) returns zero, while this ordinary
+    // JNI CAST path returns null. JSON decimal conversion handles zero separately.
+    try (ColumnVector input = ColumnVector.fromStrings("0E2147483647");
+         ColumnVector actual = CastStrings.toDecimal(input, false, 10, 0)) {
+      assertEquals(1, actual.getNullCount());
     }
   }
 

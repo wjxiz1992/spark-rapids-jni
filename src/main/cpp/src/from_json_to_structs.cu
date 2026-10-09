@@ -560,7 +560,7 @@ std::unique_ptr<cudf::column> cast_strings_to_decimals(cudf::column_view const& 
 
   auto const input_sv = cudf::strings_column_view{input};
   auto const in_offsets =
-    cudf::detail::offsetalator_factory::make_input_iterator(input_sv.offsets());
+    cudf::detail::offsetalator_factory::make_input_iterator(input_sv.offsets()) + input_sv.offset();
 
   // Count the number of characters `"`.
   rmm::device_uvector<int8_t> quote_counts(string_count, stream);
@@ -628,8 +628,9 @@ std::unique_ptr<cudf::column> cast_strings_to_decimals(cudf::column_view const& 
   auto [offsets_column, bytes] = cudf::strings::detail::make_offsets_child_column(
     out_size_it, out_size_it + string_count, stream, mr);
 
-  // If the output strings column does not change in its total bytes, we can use the input directly.
-  if (bytes == input_sv.chars_size(stream)) {
+  // Direct conversion requires a zero-offset view; sliced inputs are copied below even if their
+  // total byte count is unchanged.
+  if (input_sv.offset() == 0 && bytes == input_sv.chars_size(stream)) {
     return spark_rapids_jni::string_to_decimal(precision,
                                                output_type.scale(),
                                                input_sv,

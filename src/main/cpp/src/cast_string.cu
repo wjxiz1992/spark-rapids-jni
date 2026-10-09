@@ -521,13 +521,7 @@ CUDF_KERNEL void string_to_decimal_kernel(T* out,
   valid = validated.has_value();
 
   if (valid) {
-    bool positive;
-    int decimal_location;
-    int first_digit;
-    T exponent_val;
-    bool has_nonzero_mantissa;
-    cuda::std::tie(positive, decimal_location, first_digit, exponent_val, has_nonzero_mantissa) =
-      *validated;
+    auto [positive, decimal_location, first_digit, exponent_val, has_nonzero_mantissa] = *validated;
 
     auto const is_json_zero =
       !json_quote_counts.empty() && !has_nonzero_mantissa &&
@@ -537,29 +531,15 @@ CUDF_KERNEL void string_to_decimal_kernel(T* out,
       // overflow when the parsed exponent and the mantissa location are individually valid.
       decimal_location = 0;
     } else {
-      // The decimal location is an int even when T is wider, so reject an exponent that cannot be
-      // added without overflowing it.
-      auto constexpr max_decimal_location = cuda::std::numeric_limits<int>::max();
-      auto constexpr min_decimal_location = cuda::std::numeric_limits<int>::min();
-      bool exponent_overflows_location    = false;
-      if constexpr (sizeof(T) <= sizeof(int)) {
-        // For DECIMAL32, avoid forming an out-of-range bound in T. A positive location can only
-        // overflow with a positive exponent, and a negative location only with a negative one.
-        exponent_overflows_location =
-          (decimal_location > 0 && exponent_val > 0 &&
-           exponent_val > static_cast<T>(max_decimal_location - decimal_location)) ||
-          (decimal_location < 0 && exponent_val < 0 &&
-           exponent_val < static_cast<T>(min_decimal_location - decimal_location));
-      } else {
-        auto const max_exponent     = static_cast<int64_t>(max_decimal_location) - decimal_location;
-        auto const min_exponent     = static_cast<int64_t>(min_decimal_location) - decimal_location;
-        exponent_overflows_location = exponent_val > static_cast<T>(max_exponent) ||
-                                      exponent_val < static_cast<T>(min_exponent);
-      }
-      if (exponent_overflows_location) {
+      // Validation bounds the exponent to the Java int range, so this sum fits in int64_t for
+      // every decimal width. Check the int destination before narrowing it.
+      auto const adjusted_location =
+        static_cast<int64_t>(decimal_location) + static_cast<int64_t>(exponent_val);
+      if (adjusted_location > cuda::std::numeric_limits<int>::max() ||
+          adjusted_location < cuda::std::numeric_limits<int>::min()) {
         valid = false;
       } else {
-        decimal_location = static_cast<int>(static_cast<T>(decimal_location) + exponent_val);
+        decimal_location = static_cast<int>(adjusted_location);
       }
     }
 

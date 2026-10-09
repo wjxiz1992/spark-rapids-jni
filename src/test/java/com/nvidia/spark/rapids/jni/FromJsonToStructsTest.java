@@ -16,6 +16,7 @@
 
 package com.nvidia.spark.rapids.jni;
 
+import ai.rapids.cudf.CloseableArray;
 import ai.rapids.cudf.ColumnVector;
 import ai.rapids.cudf.ColumnView;
 import ai.rapids.cudf.DType;
@@ -269,6 +270,25 @@ public class FromJsonToStructsTest {
   }
 
   @Test
+  void testFromJsonToStructsParsesZeroAtNonzeroScales() {
+    for (int scale : new int[]{-2, 2}) {
+      Schema.Builder root = Schema.builder();
+      root.column(DType.create(DType.DTypeEnum.DECIMAL64, scale), "a", 10);
+      Schema schema = root.build();
+
+      try (ColumnVector input = ColumnVector.fromStrings(
+               "{\"a\":\"0.0E57\"}", "{\"a\":0.0E57}", "{\"a\":\"1.0E57\"}");
+           ColumnVector actual = JSONUtils.fromJSONToStructs(input, schema, getOptions(), true);
+           ColumnVector expected = ColumnVector.fromStructs(schema.asHostDataType(),
+               new HostColumnVector.StructData(BigDecimal.ZERO),
+               new HostColumnVector.StructData(BigDecimal.ZERO),
+               new HostColumnVector.StructData((Object) null))) {
+        assertColumnsAreEqual(expected, actual);
+      }
+    }
+  }
+
+  @Test
   void testFromJsonToStructsParsesZeroAcrossKernelBlocks() {
     Schema.Builder root = Schema.builder();
     root.column(DType.create(DType.DTypeEnum.DECIMAL64, 0), "a", 10);
@@ -293,8 +313,23 @@ public class FromJsonToStructsTest {
 
     try (ColumnVector full = ColumnVector.fromStrings(
              "outside-before", "\"0E2147483647\"", "\"1E2147483647\"", "outside-after");
-         ColumnVector sliced = full.subVector(1, 3);
-         ColumnVector actual = JSONUtils.convertFromStrings(sliced, schema, true, true);
+         CloseableArray<ColumnView> views = CloseableArray.wrap(full.splitAsViews(1, 3));
+         ColumnVector actual = JSONUtils.convertFromStrings(views.get(1), schema, true, true);
+         ColumnVector expected = ColumnVector.decimalFromBoxedLongs(0, 0L, null)) {
+      assertColumnsAreEqual(expected, actual);
+    }
+  }
+
+  @Test
+  void testConvertFromStringsHandlesUnquotedSlicedDecimalInput() {
+    Schema.Builder root = Schema.builder();
+    root.column(DType.create(DType.DTypeEnum.DECIMAL64, 0), "a", 10);
+    Schema schema = root.build();
+
+    try (ColumnVector full = ColumnVector.fromStrings(
+             "", "0.0E57", "1.0E57", "");
+         CloseableArray<ColumnView> views = CloseableArray.wrap(full.splitAsViews(1, 3));
+         ColumnVector actual = JSONUtils.convertFromStrings(views.get(1), schema, true, true);
          ColumnVector expected = ColumnVector.decimalFromBoxedLongs(0, 0L, null)) {
       assertColumnsAreEqual(expected, actual);
     }

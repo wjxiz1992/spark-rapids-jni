@@ -114,8 +114,8 @@ std::unique_ptr<cudf::column> string_to_decimal(
  * @throws cudf::logic_error If precision cannot be represented by a supported decimal type, or if
  *                           a non-empty @p json_quote_counts span has a different size than
  *                           @p string_col.
- * @param[in] precision Precision of input data.
- * @param[in] scale Scale of input data.
+ * @param[in] precision Precision of the output decimal type.
+ * @param[in] scale Scale of the output decimal type, using the cuDF scale convention.
  * @param[in] string_col Incoming string column to convert to decimals.
  * @param[in] ansi_mode If true, strict conversion and throws on error. If false, null invalid
  *                      entries.
