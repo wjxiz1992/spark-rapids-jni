@@ -29,7 +29,9 @@
 #include <cudf/io/json.hpp>
 #include <cudf/lists/lists_column_view.hpp>
 #include <cudf/null_mask.hpp>
+#include <cudf/strings/detail/char_tables.hpp>
 #include <cudf/strings/detail/strings_children.cuh>
+#include <cudf/strings/detail/utf8.hpp>
 #include <cudf/strings/strings_column_view.hpp>
 #include <cudf/utilities/bit.hpp>
 #include <cudf/utilities/memory_resource.hpp>
@@ -54,6 +56,7 @@
 #include <thrust/uninitialized_fill.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <iterator>
 #include <map>
 #include <span>
@@ -317,6 +320,33 @@ void nullify_rows(cudf::column& input,
 
 using string_index_pair = cuda::std::pair<char const*, cudf::size_type>;
 
+/**
+ * @brief Convert a BMP Unicode decimal digit to its ASCII equivalent.
+ *
+ * Java's BigDecimal accepts characters for which Character.isDigit(char) is true. Since the
+ * contract is defined on UTF-16 code units, supplementary code points are intentionally excluded.
+ * Unicode decimal digits are arranged in contiguous blocks of ten code points.
+ *
+ * @return The ASCII digit, or `\0` if `character` is not a supported decimal digit.
+ */
+__device__ char unicode_decimal_digit_to_ascii(
+  cudf::char_utf8 character,
+  cudf::strings::detail::character_flags_table_type const* character_flags)
+{
+  auto code_point = cudf::strings::detail::utf8_to_codepoint(character);
+  if (code_point > 0x00'FFFF || !cudf::strings::detail::IS_DECIMAL(character_flags[code_point])) {
+    return '\0';
+  }
+
+  uint32_t digit = 0;
+  while (digit < 9 && code_point > 0 &&
+         cudf::strings::detail::IS_DECIMAL(character_flags[code_point - 1])) {
+    --code_point;
+    ++digit;
+  }
+  return static_cast<char>('0' + digit);
+}
+
 std::unique_ptr<cudf::column> cast_strings_to_booleans(cudf::column_view const& input,
                                                        cuda::stream_ref stream,
                                                        rmm::device_async_resource_ref mr)
@@ -574,26 +604,40 @@ std::unique_ptr<cudf::column> cast_strings_to_decimals(cudf::column_view const& 
   rmm::device_uvector<int8_t> quote_counts(string_count, stream);
   // Count the number of characters `"` and `,` in each string.
   rmm::device_uvector<int8_t> remove_counts(string_count, stream);
+  // Count the bytes removed when replacing multi-byte Unicode decimal digits with ASCII digits.
+  rmm::device_uvector<cudf::size_type> digit_byte_reductions(string_count, stream);
+  auto const character_flags = cudf::strings::detail::get_character_flags_table(stream);
 
   {
-    using count_type    = cuda::std::tuple<int8_t, int8_t>;
+    using count_type    = cuda::std::tuple<int8_t, int8_t, cudf::size_type>;
     auto const check_it = spark_rapids_jni::util::make_counting_transform_iterator(
       0,
-      cuda::proclaim_return_type<count_type>(
-        [chars = input_sv.chars_begin(stream)] __device__(auto idx) {
-          auto const c             = chars[idx];
-          auto const is_quote      = c == '"';
-          auto const should_remove = is_quote || c == ',';
-          return count_type{static_cast<int8_t>(is_quote), static_cast<int8_t>(should_remove)};
-        }));
+      cuda::proclaim_return_type<count_type>([chars = input_sv.chars_begin(stream),
+                                              character_flags] __device__(auto idx) {
+        auto const byte                      = chars[idx];
+        auto const is_quote                  = byte == '"';
+        auto const should_remove             = is_quote || byte == ',';
+        cudf::size_type digit_byte_reduction = 0;
+        if (!cudf::strings::detail::is_utf8_continuation_char(static_cast<unsigned char>(byte))) {
+          cudf::char_utf8 character;
+          auto const character_width = cudf::strings::detail::to_char_utf8(chars + idx, character);
+          if (character_width > 1 &&
+              unicode_decimal_digit_to_ascii(character, character_flags) != '\0') {
+            digit_byte_reduction = character_width - 1;
+          }
+        }
+        return count_type{
+          static_cast<int8_t>(is_quote), static_cast<int8_t>(should_remove), digit_byte_reduction};
+      }));
     auto const plus_op =
       cuda::proclaim_return_type<count_type>([] __device__(count_type lhs, count_type rhs) {
         return count_type{cuda::std::get<0>(lhs) + cuda::std::get<0>(rhs),
-                          cuda::std::get<1>(lhs) + cuda::std::get<1>(rhs)};
+                          cuda::std::get<1>(lhs) + cuda::std::get<1>(rhs),
+                          cuda::std::get<2>(lhs) + cuda::std::get<2>(rhs)};
       });
 
-    auto const out_count_it =
-      thrust::make_zip_iterator(quote_counts.begin(), remove_counts.begin());
+    auto const out_count_it = thrust::make_zip_iterator(
+      quote_counts.begin(), remove_counts.begin(), digit_byte_reductions.begin());
 
     std::size_t temp_storage_bytes = 0;
     cub::DeviceSegmentedReduce::Reduce(nullptr,
@@ -604,7 +648,7 @@ std::unique_ptr<cudf::column> cast_strings_to_decimals(cudf::column_view const& 
                                        in_offsets,
                                        in_offsets + 1,
                                        plus_op,
-                                       count_type{0, 0},
+                                       count_type{0, 0, 0},
                                        stream.get());
     auto d_temp_storage = rmm::device_buffer{temp_storage_bytes, stream};
     cub::DeviceSegmentedReduce::Reduce(d_temp_storage.data(),
@@ -615,23 +659,27 @@ std::unique_ptr<cudf::column> cast_strings_to_decimals(cudf::column_view const& 
                                        in_offsets,
                                        in_offsets + 1,
                                        plus_op,
-                                       count_type{0, 0},
+                                       count_type{0, 0, 0},
                                        stream.get());
   }
 
   auto const out_size_it = spark_rapids_jni::util::make_counting_transform_iterator(
     0,
     cuda::proclaim_return_type<cudf::size_type>(
-      [offsets       = in_offsets,
-       quote_counts  = quote_counts.begin(),
-       remove_counts = remove_counts.begin()] __device__(auto idx) {
+      [offsets               = in_offsets,
+       quote_counts          = quote_counts.begin(),
+       remove_counts         = remove_counts.begin(),
+       digit_byte_reductions = digit_byte_reductions.begin()] __device__(auto idx) {
         auto const input_size = offsets[idx + 1] - offsets[idx];
-        // If the current row is non-quoted, just return the original string.
-        // As such, non-quoted string containing `,` character will not be preprocessed.
-        if (quote_counts[idx] == 0) { return static_cast<cudf::size_type>(input_size); }
+        // For non-quoted strings, only normalize Unicode decimal digits. In particular, preserve
+        // any `,` character so the conversion function can reject it as before.
+        if (quote_counts[idx] == 0) {
+          return static_cast<cudf::size_type>(input_size - digit_byte_reductions[idx]);
+        }
 
-        // For quoted strings, we will modify them, removing characters '"' and ','.
-        return static_cast<cudf::size_type>(input_size - remove_counts[idx]);
+        // For quoted strings, also remove characters '"' and ','.
+        return static_cast<cudf::size_type>(input_size - remove_counts[idx] -
+                                            digit_byte_reductions[idx]);
       }));
   auto [offsets_column, bytes] = cudf::strings::detail::make_offsets_child_column(
     out_size_it, out_size_it + string_count, stream, mr);
@@ -653,35 +701,46 @@ std::unique_ptr<cudf::column> cast_strings_to_decimals(cudf::column_view const& 
 
   // Since the strings store decimal numbers, they should not be very long.
   // As such, using one thread per string should be fine.
-  thrust::for_each(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
-                   thrust::make_counting_iterator(0),
-                   thrust::make_counting_iterator(string_count),
-                   [in_offsets,
-                    out_offsets,
-                    input  = input_sv.chars_begin(stream),
-                    output = chars_data.begin()] __device__(auto idx) {
-                     auto const in_size  = in_offsets[idx + 1] - in_offsets[idx];
-                     auto const out_size = out_offsets[idx + 1] - out_offsets[idx];
-                     if (in_size == 0) { return; }
+  thrust::for_each(
+    rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
+    thrust::make_counting_iterator(0),
+    thrust::make_counting_iterator(string_count),
+    [in_offsets,
+     out_offsets,
+     quote_counts = quote_counts.begin(),
+     character_flags,
+     input  = input_sv.chars_begin(stream),
+     output = chars_data.begin()] __device__(auto idx) {
+      auto const in_size  = in_offsets[idx + 1] - in_offsets[idx];
+      auto const out_size = out_offsets[idx + 1] - out_offsets[idx];
+      if (in_size == 0) { return; }
 
-                     // If the output size is not changed, we are returning the original unquoted
-                     // string. Such string may still contain other alphabet characters, but that
-                     // should be handled in the conversion function later on.
-                     if (in_size == out_size) {
-                       memcpy(output + out_offsets[idx], input + in_offsets[idx], in_size);
-                     } else {  // copy byte by byte, ignoring '"' and ',' characters.
-                       auto in_ptr  = input + in_offsets[idx];
-                       auto in_end  = input + in_offsets[idx + 1];
-                       auto out_ptr = output + out_offsets[idx];
-                       while (in_ptr != in_end) {
-                         if (*in_ptr != '"' && *in_ptr != ',') {
-                           *out_ptr = *in_ptr;
-                           ++out_ptr;
-                         }
-                         ++in_ptr;
-                       }
-                     }
-                   });
+      // If the output size is not changed, we are returning the original unquoted
+      // string. Such string may still contain other alphabet characters, but that
+      // should be handled in the conversion function later on.
+      if (in_size == out_size) {
+        memcpy(output + out_offsets[idx], input + in_offsets[idx], in_size);
+      } else {
+        auto const is_quoted = quote_counts[idx] != 0;
+        auto in_ptr          = input + in_offsets[idx];
+        auto in_end          = input + in_offsets[idx + 1];
+        auto out_ptr         = output + out_offsets[idx];
+        while (in_ptr != in_end) {
+          cudf::char_utf8 character;
+          auto const character_width = cudf::strings::detail::to_char_utf8(in_ptr, character);
+          auto const ascii_digit =
+            character_width > 1 ? unicode_decimal_digit_to_ascii(character, character_flags) : '\0';
+          if (ascii_digit != '\0') {
+            *out_ptr = ascii_digit;
+            ++out_ptr;
+          } else if (!is_quoted || (*in_ptr != '"' && *in_ptr != ',')) {
+            memcpy(out_ptr, in_ptr, character_width);
+            out_ptr += character_width;
+          }
+          in_ptr += character_width;
+        }
+      }
+    });
 
   // Don't care about the null mask, as nulls imply empty strings, which will also result in nulls.
   auto const unquoted_strings =
