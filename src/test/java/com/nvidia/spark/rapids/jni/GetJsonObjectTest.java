@@ -772,6 +772,21 @@ public class GetJsonObjectTest {
   }
 
   @Test
+  void getJsonObjectRejectsNullFieldNamesTest() {
+    JSONUtils.PathInstructionJni[] path = {namedPath(null)};
+    List<List<JSONUtils.PathInstructionJni>> paths =
+        Collections.singletonList(Collections.singletonList(namedPath(null)));
+    try (ColumnVector input = ColumnVector.fromStrings("{\"\":\"empty\"}")) {
+      assertThrows(IllegalArgumentException.class, () -> JSONUtils.getJsonObject(input, path));
+      assertThrows(IllegalArgumentException.class,
+          () -> JSONUtils.getJsonObjectMultiplePaths(input, paths));
+      assertThrows(IllegalArgumentException.class,
+          () -> JSONUtils.getJsonObjectMultiplePaths(
+              input, paths, JSONUtils.NamedFieldMatchPolicy.LAST_NON_NULL));
+    }
+  }
+
+  @Test
   void getJsonObjectMultiplePathsTest_JNIKernelCalledTwice() {
     List<JSONUtils.PathInstructionJni> path0 = Arrays.asList(namedPath("k0"));
     List<JSONUtils.PathInstructionJni> path1 = Arrays.asList(namedPath("k1"));

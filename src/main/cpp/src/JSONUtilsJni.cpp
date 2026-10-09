@@ -52,7 +52,14 @@ jlongArray get_json_object_multiple_paths(JNIEnv* env,
     auto const path_offsets = cudf::jni::native_jintArray(env, j_path_offsets).to_vector();
     CUDF_EXPECTS(path_offsets.size() > 1, "Invalid path offsets.");
     auto const type_nums = cudf::jni::native_jbyteArray(env, j_type_nums).to_vector();
-    auto const names     = cudf::jni::native_jstringArray(env, j_names).as_cpp_vector();
+    auto const name_array = cudf::jni::native_jstringArray(env, j_names);
+    for (int i = 0; i < name_array.size(); ++i) {
+      if (name_array.get(i).is_null()) {
+        auto const message = "Field name at index " + std::to_string(i) + " is null";
+        JNI_THROW_NEW(env, cudf::jni::ILLEGAL_ARG_EXCEPTION_CLASS, message.c_str(), nullptr);
+      }
+    }
+    auto const names     = name_array.as_cpp_vector();
     auto const indexes   = cudf::jni::native_jintArray(env, j_indexes).to_vector();
     auto const num_paths = path_offsets.size() - 1;
     paths.resize(num_paths);
@@ -139,7 +146,14 @@ Java_com_nvidia_spark_rapids_jni_JSONUtils_getJsonObject(JNIEnv* env,
     std::vector<std::tuple<path_instruction_type, std::string, int32_t>> instructions;
 
     auto const type_nums = cudf::jni::native_jbyteArray(env, j_type_nums).to_vector();
-    auto const names     = cudf::jni::native_jstringArray(env, j_names).as_cpp_vector();
+    auto const name_array = cudf::jni::native_jstringArray(env, j_names);
+    for (int i = 0; i < name_array.size(); ++i) {
+      if (name_array.get(i).is_null()) {
+        auto const message = "Field name at index " + std::to_string(i) + " is null";
+        JNI_THROW_NEW(env, cudf::jni::ILLEGAL_ARG_EXCEPTION_CLASS, message.c_str(), 0);
+      }
+    }
+    auto const names     = name_array.as_cpp_vector();
     auto const indexes   = cudf::jni::native_jintArray(env, j_indexes).to_vector();
     auto const size      = type_nums.size();
     if (names.size() != size || indexes.size() != size) {
