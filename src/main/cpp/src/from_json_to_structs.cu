@@ -29,7 +29,6 @@
 #include <cudf/io/json.hpp>
 #include <cudf/lists/lists_column_view.hpp>
 #include <cudf/null_mask.hpp>
-#include <cudf/strings/detail/char_tables.hpp>
 #include <cudf/strings/detail/strings_children.cuh>
 #include <cudf/strings/detail/utf8.hpp>
 #include <cudf/strings/strings_column_view.hpp>
@@ -42,12 +41,14 @@
 #include <rmm/exec_policy.hpp>
 
 #include <cub/device/device_segmented_reduce.cuh>
+#include <cuda.h>
 #include <cuda/atomic>
 #include <cuda/functional>
 #include <cuda/std/functional>
 #include <cuda/std/tuple>
 #include <cuda/std/utility>
 #include <cuda/stream>
+#include <cuda_runtime.h>
 #include <thrust/for_each.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/iterator/zip_iterator.h>
@@ -59,14 +60,76 @@
 #include <cstdint>
 #include <iterator>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <span>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace spark_rapids_jni {
 
 namespace detail {
 
 namespace {
+
+// Keep the active JVM's digit table in each CUDA context. A device symbol avoids a persistent RMM
+// allocation that could outlive RMM teardown. Complete the first copy before another stream uses
+// it.
+__device__ int8_t decimal_digit_values_device[0x1'0000];
+
+struct decimal_digit_table_entry {
+  std::vector<int8_t> host_values;
+  int8_t const* device_values;
+};
+
+std::mutex decimal_digit_table_mutex;
+std::unordered_map<unsigned long long, decimal_digit_table_entry> decimal_digit_tables;
+
+int8_t const* get_decimal_digit_table(std::vector<int> const& types,
+                                      std::span<int8_t const> decimal_digit_values)
+{
+  auto const has_decimal = std::any_of(types.begin(), types.end(), [](auto const type) {
+    return cudf::is_fixed_point(cudf::data_type{static_cast<cudf::type_id>(type)});
+  });
+  if (!has_decimal) { return nullptr; }
+
+  CUDF_EXPECTS(decimal_digit_values.size() == 0x1'0000,
+               "Expected one decimal digit value for each UTF-16 code unit.");
+
+  // Resolve the symbol first so CUDA has an active context. Device IDs alone cannot identify a
+  // table after cudaDeviceReset or when multiple contexts use the same device.
+  void* device_values = nullptr;
+  CUDF_CUDA_TRY(cudaGetSymbolAddress(&device_values, decimal_digit_values_device));
+  CUDF_EXPECTS(cuInit(0) == CUDA_SUCCESS, "Could not initialize the CUDA driver.");
+  unsigned long long context_id;
+  CUDF_EXPECTS(cuCtxGetId(nullptr, &context_id) == CUDA_SUCCESS,
+               "Could not get the CUDA context ID.");
+  std::lock_guard lock{decimal_digit_table_mutex};
+  if (auto const cached = decimal_digit_tables.find(context_id);
+      cached != decimal_digit_tables.end()) {
+    CUDF_EXPECTS(std::equal(decimal_digit_values.begin(),
+                            decimal_digit_values.end(),
+                            cached->second.host_values.begin()),
+                 "Decimal digit values changed within a CUDA context.");
+    return cached->second.device_values;
+  }
+
+  CUDF_CUDA_TRY(cudaMemcpyToSymbol(decimal_digit_values_device,
+                                   decimal_digit_values.data(),
+                                   decimal_digit_values.size_bytes(),
+                                   0,
+                                   cudaMemcpyDefault));
+  // A pageable host-to-device copy can return after staging, before device DMA has completed.
+  // Finish the first upload before a conversion on another stream can use the cached pointer.
+  CUDF_CUDA_TRY(cudaStreamSynchronize(0));
+  decimal_digit_tables.emplace(
+    context_id,
+    decimal_digit_table_entry{
+      std::vector<int8_t>(decimal_digit_values.begin(), decimal_digit_values.end()),
+      static_cast<int8_t const*>(device_values)});
+  return static_cast<int8_t const*>(device_values);
+}
 
 /**
  * @brief The struct similar to `cudf::io::schema_element` with adding decimal precision and
@@ -323,28 +386,18 @@ using string_index_pair = cuda::std::pair<char const*, cudf::size_type>;
 /**
  * @brief Convert a BMP Unicode decimal digit to its ASCII equivalent.
  *
- * Java's BigDecimal accepts characters for which Character.isDigit(char) is true. Since the
- * contract is defined on UTF-16 code units, supplementary code points are intentionally excluded.
- * Unicode decimal digits are arranged in contiguous blocks of ten code points.
+ * Use the digit values computed by the active JVM, since Character's Unicode version varies
+ * between Java releases. Supplementary code points are excluded by the UTF-16 char contract.
  *
  * @return The ASCII digit, or `\0` if `character` is not a supported decimal digit.
  */
-__device__ char unicode_decimal_digit_to_ascii(
-  cudf::char_utf8 character,
-  cudf::strings::detail::character_flags_table_type const* character_flags)
+__device__ char unicode_decimal_digit_to_ascii(cudf::char_utf8 character,
+                                               int8_t const* decimal_digit_values)
 {
-  auto code_point = cudf::strings::detail::utf8_to_codepoint(character);
-  if (code_point > 0x00'FFFF || !cudf::strings::detail::IS_DECIMAL(character_flags[code_point])) {
-    return '\0';
-  }
-
-  uint32_t digit = 0;
-  while (digit < 9 && code_point > 0 &&
-         cudf::strings::detail::IS_DECIMAL(character_flags[code_point - 1])) {
-    --code_point;
-    ++digit;
-  }
-  return static_cast<char>('0' + digit);
+  auto const code_point = cudf::strings::detail::utf8_to_codepoint(character);
+  if (code_point > 0x00'FFFF) { return '\0'; }
+  auto const digit = decimal_digit_values[code_point];
+  return digit >= 0 && digit <= 9 ? static_cast<char>('0' + digit) : '\0';
 }
 
 std::unique_ptr<cudf::column> cast_strings_to_booleans(cudf::column_view const& input,
@@ -586,6 +639,7 @@ std::unique_ptr<cudf::column> cast_strings_to_decimals(cudf::column_view const& 
                                                        cudf::data_type output_type,
                                                        int precision,
                                                        bool is_us_locale,
+                                                       int8_t const* decimal_digit_values,
                                                        cuda::stream_ref stream,
                                                        rmm::device_async_resource_ref mr)
 {
@@ -595,6 +649,7 @@ std::unique_ptr<cudf::column> cast_strings_to_decimals(cudf::column_view const& 
   if (string_count == 0) { return cudf::make_empty_column(output_type); }
 
   CUDF_EXPECTS(is_us_locale, "String to decimal conversion is only supported in US locale.");
+  CUDF_EXPECTS(decimal_digit_values != nullptr, "Decimal digit values are required.");
 
   auto const input_sv = cudf::strings_column_view{input};
   auto const in_offsets =
@@ -606,14 +661,13 @@ std::unique_ptr<cudf::column> cast_strings_to_decimals(cudf::column_view const& 
   rmm::device_uvector<int8_t> remove_counts(string_count, stream);
   // Count the bytes removed when replacing multi-byte Unicode decimal digits with ASCII digits.
   rmm::device_uvector<cudf::size_type> digit_byte_reductions(string_count, stream);
-  auto const character_flags = cudf::strings::detail::get_character_flags_table(stream);
 
   {
     using count_type    = cuda::std::tuple<int8_t, int8_t, cudf::size_type>;
     auto const check_it = spark_rapids_jni::util::make_counting_transform_iterator(
       0,
       cuda::proclaim_return_type<count_type>([chars = input_sv.chars_begin(stream),
-                                              character_flags] __device__(auto idx) {
+                                              decimal_digit_values] __device__(auto idx) {
         auto const byte                      = chars[idx];
         auto const is_quote                  = byte == '"';
         auto const should_remove             = is_quote || byte == ',';
@@ -622,7 +676,7 @@ std::unique_ptr<cudf::column> cast_strings_to_decimals(cudf::column_view const& 
           cudf::char_utf8 character;
           auto const character_width = cudf::strings::detail::to_char_utf8(chars + idx, character);
           if (character_width > 1 &&
-              unicode_decimal_digit_to_ascii(character, character_flags) != '\0') {
+              unicode_decimal_digit_to_ascii(character, decimal_digit_values) != '\0') {
             digit_byte_reduction = character_width - 1;
           }
         }
@@ -708,7 +762,7 @@ std::unique_ptr<cudf::column> cast_strings_to_decimals(cudf::column_view const& 
     [in_offsets,
      out_offsets,
      quote_counts = quote_counts.begin(),
-     character_flags,
+     decimal_digit_values,
      input  = input_sv.chars_begin(stream),
      output = chars_data.begin()] __device__(auto idx) {
       auto const in_size  = in_offsets[idx + 1] - in_offsets[idx];
@@ -729,7 +783,8 @@ std::unique_ptr<cudf::column> cast_strings_to_decimals(cudf::column_view const& 
           cudf::char_utf8 character;
           auto const character_width = cudf::strings::detail::to_char_utf8(in_ptr, character);
           auto const ascii_digit =
-            character_width > 1 ? unicode_decimal_digit_to_ascii(character, character_flags) : '\0';
+            character_width > 1 ? unicode_decimal_digit_to_ascii(character, decimal_digit_values)
+                                : '\0';
           if (ascii_digit != '\0') {
             *out_ptr = ascii_digit;
             ++out_ptr;
@@ -847,6 +902,7 @@ std::unique_ptr<cudf::column> convert_data_type(InputType&& input,
                                                 schema_element_with_precision const& schema,
                                                 bool allow_nonnumeric_numbers,
                                                 bool is_us_locale,
+                                                int8_t const* decimal_digit_values,
                                                 bool did_nullify_schema_mismatch_rows,
                                                 cuda::stream_ref stream,
                                                 rmm::device_async_resource_ref mr)
@@ -906,11 +962,16 @@ std::unique_ptr<cudf::column> convert_data_type(InputType&& input,
 
     if (cudf::is_fixed_point(schema.type)) {
       if constexpr (input_is_column_ptr) {
-        return cast_strings_to_decimals(
-          input->view(), schema.type, schema.precision, is_us_locale, stream, mr);
+        return cast_strings_to_decimals(input->view(),
+                                        schema.type,
+                                        schema.precision,
+                                        is_us_locale,
+                                        decimal_digit_values,
+                                        stream,
+                                        mr);
       } else {
         return cast_strings_to_decimals(
-          input, schema.type, schema.precision, is_us_locale, stream, mr);
+          input, schema.type, schema.precision, is_us_locale, decimal_digit_values, stream, mr);
       }
     }
 
@@ -956,6 +1017,7 @@ std::unique_ptr<cudf::column> convert_data_type(InputType&& input,
                                                   child_schema,
                                                   allow_nonnumeric_numbers,
                                                   is_us_locale,
+                                                  decimal_digit_values,
                                                   /*did_nullify_schema_mismatch_rows=*/false,
                                                   stream,
                                                   mr));
@@ -979,6 +1041,7 @@ std::unique_ptr<cudf::column> convert_data_type(InputType&& input,
                                                     schema.child_types[i].second,
                                                     allow_nonnumeric_numbers,
                                                     is_us_locale,
+                                                    decimal_digit_values,
                                                     /*did_nullify_schema_mismatch_rows=*/false,
                                                     stream,
                                                     mr));
@@ -1012,6 +1075,7 @@ std::unique_ptr<cudf::column> convert_data_type(InputType&& input,
                                                   child_schema,
                                                   allow_nonnumeric_numbers,
                                                   is_us_locale,
+                                                  decimal_digit_values,
                                                   /*did_nullify_schema_mismatch_rows=*/false,
                                                   stream,
                                                   mr));
@@ -1035,6 +1099,7 @@ std::unique_ptr<cudf::column> convert_data_type(InputType&& input,
                                                     schema.child_types[i].second,
                                                     allow_nonnumeric_numbers,
                                                     is_us_locale,
+                                                    decimal_digit_values,
                                                     /*did_nullify_schema_mismatch_rows=*/false,
                                                     stream,
                                                     mr));
@@ -1065,6 +1130,7 @@ std::unique_ptr<cudf::column> from_json_to_structs(cudf::strings_column_view con
                                                    bool allow_nonnumeric_numbers,
                                                    bool allow_unquoted_control,
                                                    bool is_us_locale,
+                                                   std::span<int8_t const> decimal_digit_values,
                                                    cuda::stream_ref stream,
                                                    rmm::device_async_resource_ref mr)
 {
@@ -1074,6 +1140,8 @@ std::unique_ptr<cudf::column> from_json_to_structs(cudf::strings_column_view con
     generate_struct_schema(col_names, num_children, types, scales, precisions);
 
   if (input.is_empty()) { return make_empty_column_from_schema(schema_with_precision, stream, mr); }
+
+  auto const digit_values = get_decimal_digit_table(types, decimal_digit_values);
 
   auto opts_builder =
     cudf::io::json_reader_options::builder(
@@ -1131,6 +1199,7 @@ std::unique_ptr<cudf::column> from_json_to_structs(cudf::strings_column_view con
                                                   col_schema,
                                                   allow_nonnumeric_numbers,
                                                   is_us_locale,
+                                                  digit_values,
                                                   did_nullify_schema_mismatch_rows,
                                                   stream,
                                                   mr));
@@ -1166,6 +1235,7 @@ std::unique_ptr<cudf::column> from_json_to_structs(cudf::strings_column_view con
                                                    bool allow_nonnumeric_numbers,
                                                    bool allow_unquoted_control,
                                                    bool is_us_locale,
+                                                   std::span<int8_t const> decimal_digit_values,
                                                    cuda::stream_ref stream,
                                                    rmm::device_async_resource_ref mr)
 {
@@ -1182,6 +1252,7 @@ std::unique_ptr<cudf::column> from_json_to_structs(cudf::strings_column_view con
                                       allow_nonnumeric_numbers,
                                       allow_unquoted_control,
                                       is_us_locale,
+                                      decimal_digit_values,
                                       stream,
                                       mr);
 }
@@ -1193,6 +1264,7 @@ std::unique_ptr<cudf::column> convert_from_strings(cudf::strings_column_view con
                                                    std::vector<int> const& precisions,
                                                    bool allow_nonnumeric_numbers,
                                                    bool is_us_locale,
+                                                   std::span<int8_t const> decimal_digit_values,
                                                    cuda::stream_ref stream,
                                                    rmm::device_async_resource_ref mr)
 {
@@ -1207,11 +1279,13 @@ std::unique_ptr<cudf::column> convert_from_strings(cudf::strings_column_view con
   CUDF_EXPECTS(schema_with_precision.child_types.size() == 1,
                "The input schema to convert must have exactly one column.");
 
-  auto const input_cv = input.parent();
+  auto const input_cv     = input.parent();
+  auto const digit_values = detail::get_decimal_digit_table(types, decimal_digit_values);
   return detail::convert_data_type(input_cv,
                                    schema_with_precision.child_types.front().second,
                                    allow_nonnumeric_numbers,
                                    is_us_locale,
+                                   digit_values,
                                    /*did_nullify_schema_mismatch_rows=*/false,
                                    stream,
                                    mr);

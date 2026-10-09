@@ -99,6 +99,14 @@ public class FromJsonToStructsTest {
       }
     }
 
+    // These digit blocks were added after Java 8's Unicode version. On an older JVM they must
+    // remain invalid even if the native cuDF Unicode table recognizes them.
+    for (char character : new char[] {'\u0DE6', '\uA9F0'}) {
+      decimalStrings.add("\"" + character + "\"");
+      expectedUnscaledValues.add(Character.isDigit(character)
+          ? Character.digit(character, 10) * 100000L : null);
+    }
+
     String[] issueValues = {
         "\u0967,\u0966\u0966\u0966.\u0966\u0966\u0967",
         "\u0E51,\u0E50\u0E50\u0E50.\u0E50\u0E50\u0E51",
@@ -163,6 +171,25 @@ public class FromJsonToStructsTest {
          ColumnVector expected =
              ColumnVector.decimalFromBoxedLongs(DECIMAL_SCALE, data.expectedUnscaledValues)) {
       assertColumnsAreEqual(expected, actualDecimals);
+    }
+  }
+
+  @Test
+  void testFromJsonToStructsNormalizesNestedDecimalDigits() {
+    Schema.Builder root = Schema.builder();
+    root.addColumn(DType.STRUCT, "nested")
+        .column(DECIMAL_TYPE, "amount", DECIMAL_PRECISION);
+    Long laterDigit = Character.isDigit('\u0DE6') ? 0L : null;
+    try (ColumnVector input = ColumnVector.fromStrings(
+             "{\"nested\":{\"amount\":\"\u0967\"}}",
+             "{\"nested\":{\"amount\":\"\u0DE6\"}}",
+             "{\"nested\":{\"amount\":\"2\"}}");
+         ColumnVector actual = JSONUtils.fromJSONToStructs(input, root.build(), getOptions(), true);
+         ColumnView nested = actual.getChildColumnView(0);
+         ColumnView decimals = nested.getChildColumnView(0);
+         ColumnVector expected = ColumnVector.decimalFromBoxedLongs(
+             DECIMAL_SCALE, 100000L, laterDigit, 200000L)) {
+      assertColumnsAreEqual(expected, decimals);
     }
   }
 
