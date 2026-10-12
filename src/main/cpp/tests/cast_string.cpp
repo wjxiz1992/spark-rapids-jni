@@ -639,6 +639,47 @@ TEST_F(StringToDecimalTests, ExtremeExponentCarryDoesNotOverflowPosition)
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected);
 }
 
+TEST_F(StringToDecimalTests, ExtremeExponentRejectsOverflowedPosition)
+{
+  auto const stream = cudf::get_default_stream();
+  // Ordinary CAST must reject the adjusted position 1 + INT_MAX, even for zero.
+  // If it wraps negative, zero otherwise survives conversion, so a null result
+  // detects the missing guard.
+  auto const strings = test::strings_column_wrapper{"0e2147483647", "0e2147483646"};
+  auto const result =
+    spark_rapids_jni::string_to_decimal(1, 0, strings_column_view{strings}, false, false, stream);
+  auto const expected =
+    test::fixed_point_column_wrapper<int32_t>({0, 0}, {0, 0}, numeric::scale_type{0});
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected);
+}
+
+TEST_F(StringToDecimalTests, JsonZeroExponent)
+{
+  auto const stream       = cudf::get_default_stream();
+  auto const strings      = test::strings_column_wrapper{"0e2147483647",
+                                                    "-0.00e2147483647",
+                                                    "0e2147483647",
+                                                    "+0e2147483647",
+                                                    "+0e2147483647",
+                                                    "0.e2147483647",
+                                                    ".0e2147483647",
+                                                    "0.01e2147483647"};
+  auto const quote_counts = test::fixed_width_column_wrapper<int8_t>{0, 0, 2, 0, 2, 0, 0, 0};
+  cudf::column_view const quote_counts_view = quote_counts;
+  auto const result                         = spark_rapids_jni::string_to_decimal(
+    1,
+    0,
+    strings_column_view{strings},
+    false,
+    false,
+    cudf::device_span<int8_t const>{quote_counts_view.data<int8_t>(),
+                                                            static_cast<std::size_t>(quote_counts_view.size())},
+    stream);
+  auto const expected = test::fixed_point_column_wrapper<int32_t>(
+    {0, 0, 0, 0, 0, 0, 0, 0}, {1, 1, 1, 0, 1, 0, 0, 0}, numeric::scale_type{0});
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected);
+}
+
 TEST_F(StringToDecimalTests, NonEmptyNulls)
 {
   auto const strings =

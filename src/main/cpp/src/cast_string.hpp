@@ -139,8 +139,8 @@ std::unique_ptr<cudf::column> string_to_decimal(
   bool ansi_mode,
   bool strip,
   cudf::device_span<int8_t const> json_quote_counts,
-  cuda::stream_ref stream           = cudf::get_default_stream(),
-  rmm::device_async_resource_ref mr = cudf::get_current_device_resource_ref());
+  cuda::stream_ref stream   = cudf::get_default_stream(),
+  cudf::memory_resources mr = cudf::get_current_device_resource_ref());
 
 /**
  * @brief Convert a string column into an float column.

@@ -260,7 +260,16 @@ CUDF_KERNEL void string_to_integer_kernel(T* out,
 }
 
 template <typename T>
-[[nodiscard]] __device__ cuda::std::optional<cuda::std::tuple<bool, int, int, T, bool>>
+struct parsed_decimal_exponent {
+  bool positive;
+  int decimal_location;
+  int first_digit;
+  T exponent_val;
+  bool has_nonzero_mantissa;
+};
+
+template <typename T>
+[[nodiscard]] __device__ cuda::std::optional<parsed_decimal_exponent<T>>
 validate_and_parse_exponent(char const* chars, int const len, bool strip)
 {
   T exponent_val            = 0;
@@ -407,8 +416,18 @@ validate_and_parse_exponent(char const* chars, int const len, bool strip)
   // decimal location moves to end of digits if no decimal found
   if (decimal_location < 0) { decimal_location = last_digit - first_digit; }
 
-  return cuda::std::tuple{
+  return parsed_decimal_exponent<T>{
     positive, decimal_location, first_digit, exponent_val, has_nonzero_mantissa};
+}
+
+__device__ bool scan_zero_digits(char const* chars, int len, int& i)
+{
+  auto const start = i;
+  while (i < len && chars[i] >= '0' && chars[i] <= '9') {
+    if (chars[i] != '0') { return false; }
+    ++i;
+  }
+  return i != start;
 }
 
 /**
@@ -423,21 +442,11 @@ __device__ bool is_valid_unquoted_json_zero(char const* chars, int len)
   int i = 0;
   if (i < len && chars[i] == '-') { ++i; }
 
-  auto const integer_start = i;
-  while (i < len && chars[i] >= '0' && chars[i] <= '9') {
-    if (chars[i] != '0') { return false; }
-    ++i;
-  }
-  if (i == integer_start) { return false; }
+  if (!scan_zero_digits(chars, len, i)) { return false; }
 
   if (i < len && chars[i] == '.') {
     ++i;
-    auto const fraction_start = i;
-    while (i < len && chars[i] >= '0' && chars[i] <= '9') {
-      if (chars[i] != '0') { return false; }
-      ++i;
-    }
-    if (i == fraction_start) { return false; }
+    if (!scan_zero_digits(chars, len, i)) { return false; }
   }
 
   if (i < len && (chars[i] == 'e' || chars[i] == 'E')) {
@@ -522,7 +531,11 @@ CUDF_KERNEL void string_to_decimal_kernel(T* out,
   valid = validated.has_value();
 
   if (valid) {
-    auto [positive, decimal_location, first_digit, exponent_val, has_nonzero_mantissa] = *validated;
+    auto const positive             = validated->positive;
+    auto decimal_location           = validated->decimal_location;
+    auto const first_digit          = validated->first_digit;
+    auto const exponent_val         = validated->exponent_val;
+    auto const has_nonzero_mantissa = validated->has_nonzero_mantissa;
 
     auto const is_json_zero =
       !json_quote_counts.empty() && !has_nonzero_mantissa &&
@@ -952,7 +965,7 @@ std::unique_ptr<column> string_to_decimal(int32_t precision,
                                           bool strip,
                                           cudf::device_span<int8_t const> json_quote_counts,
                                           cuda::stream_ref stream,
-                                          rmm::device_async_resource_ref mr)
+                                          cudf::memory_resources mr)
 {
   SRJ_FUNC_RANGE();
 
@@ -985,7 +998,7 @@ std::unique_ptr<column> string_to_decimal(int32_t precision,
                          strip,
                          json_quote_counts,
                          stream,
-                         mr);
+                         mr.get_output_mr());
 }
 
 }  // namespace spark_rapids_jni
