@@ -685,13 +685,11 @@ std::unique_ptr<cudf::column> cast_strings_to_decimals(cudf::column_view const& 
                      }
                    });
 
-  // Don't care about the null mask, as nulls imply empty strings, which will also result in nulls.
-  auto const unquoted_strings =
-    cudf::make_strings_column(string_count,
-                              std::move(offsets_column),
-                              chars_data.release(),
-                              0,
-                              cudf::create_null_mask(0, cudf::mask_state::UNALLOCATED));
+  auto const unquoted_strings = cudf::make_strings_column(string_count,
+                                                          std::move(offsets_column),
+                                                          chars_data.release(),
+                                                          input.null_count(),
+                                                          cudf::copy_bitmask(input, stream, mr));
 
   return spark_rapids_jni::string_to_decimal(precision,
                                              output_type.scale(),

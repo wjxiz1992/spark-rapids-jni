@@ -44,6 +44,37 @@
 
 struct FromJsonTest : public cudf::test::BaseFixture {};
 
+TEST_F(FromJsonTest, ConvertFromStringsPreservesSlicedDecimalNulls)
+{
+  for (bool const quoted : {false, true}) {
+    SCOPED_TRACE(quoted);
+    auto const strings =
+      cudf::test::strings_column_wrapper{"outside-before",
+                                         quoted ? "\"0E2147483647\"" : "0E2147483647",
+                                         quoted ? "\"7\"" : "7",
+                                         quoted ? "\"0.0E57\"" : "0.0E57",
+                                         quoted ? "\"2\"" : "2",
+                                         "outside-after"}
+        .release();
+    auto const valids            = std::vector<bool>{false, true, false, false, true, true};
+    auto [null_mask, null_count] = cudf::test::detail::make_null_mask(valids.begin(), valids.end());
+    strings->set_null_mask(std::move(null_mask), null_count);
+
+    auto const sliced = cudf::slice(strings->view(), {1, 5})[0];
+    auto const result =
+      spark_rapids_jni::convert_from_strings(cudf::strings_column_view{sliced},
+                                             {0},
+                                             {static_cast<int>(cudf::type_id::DECIMAL64)},
+                                             {0},
+                                             {10},
+                                             true,
+                                             true);
+    auto const expected = cudf::test::fixed_point_column_wrapper<int64_t>(
+      {0, 0, 0, 2}, {1, 0, 0, 1}, numeric::scale_type{0});
+    CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected);
+  }
+}
+
 namespace {
 
 // One (key, value) entry of a raw-map row, in the exact textual content the raw-map engine emits.
