@@ -59,6 +59,8 @@ public class FromJsonToStructsTest {
 
     try (ColumnVector input = ColumnVector.fromStrings(
              "{\"a\":\"0E2147483647\"}",
+             "{\"a\":\"0E2147483646\"}",
+             "{\"a\":0E2147483647}",
              "{\"a\":\"0E-2147483647\"}",
              "{\"a\":\"0.E-2147483647\"}",
              "{\"a\":\"0.0E2147483647\"}",
@@ -70,6 +72,8 @@ public class FromJsonToStructsTest {
              "{\"a\":\"1E-2147483648\"}");
          ColumnVector actual = JSONUtils.fromJSONToStructs(input, schema, getOptions(), true);
          ColumnVector expected = ColumnVector.fromStructs(schema.asHostDataType(),
+             new HostColumnVector.StructData(BigDecimal.ZERO),
+             new HostColumnVector.StructData(BigDecimal.ZERO),
              new HostColumnVector.StructData(BigDecimal.ZERO),
              new HostColumnVector.StructData(BigDecimal.ZERO),
              new HostColumnVector.StructData(BigDecimal.ZERO),
