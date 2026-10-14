@@ -1149,12 +1149,17 @@ std::unique_ptr<cudf::column> convert_from_strings(cudf::strings_column_view con
     precisions);
   CUDF_EXPECTS(schema_with_precision.child_types.size() == 1,
                "The input schema to convert must have exactly one column.");
+  auto const& output_schema = schema_with_precision.child_types.front().second;
 
   if (input.offset() != 0) {
-    auto normalized = cudf::strings::detail::copy_slice(
-      input, 0, input.size(), stream, cudf::get_current_device_resource_ref());
+    auto const normalization_mr =
+      output_schema.type.id() == cudf::type_id::STRING || cudf::is_chrono(output_schema.type)
+        ? mr
+        : cudf::get_current_device_resource_ref();
+    auto normalized =
+      cudf::strings::detail::copy_slice(input, 0, input.size(), stream, normalization_mr);
     return detail::convert_data_type(std::move(normalized),
-                                     schema_with_precision.child_types.front().second,
+                                     output_schema,
                                      allow_nonnumeric_numbers,
                                      is_us_locale,
                                      /*did_nullify_schema_mismatch_rows=*/false,
@@ -1163,7 +1168,7 @@ std::unique_ptr<cudf::column> convert_from_strings(cudf::strings_column_view con
   }
 
   return detail::convert_data_type(input.parent(),
-                                   schema_with_precision.child_types.front().second,
+                                   output_schema,
                                    allow_nonnumeric_numbers,
                                    is_us_locale,
                                    /*did_nullify_schema_mismatch_rows=*/false,
