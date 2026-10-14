@@ -29,6 +29,7 @@
 #include <cudf/io/json.hpp>
 #include <cudf/lists/lists_column_view.hpp>
 #include <cudf/null_mask.hpp>
+#include <cudf/strings/detail/copying.hpp>
 #include <cudf/strings/detail/strings_children.cuh>
 #include <cudf/strings/strings_column_view.hpp>
 #include <cudf/utilities/bit.hpp>
@@ -333,7 +334,7 @@ std::unique_ptr<cudf::column> cast_strings_to_booleans(cudf::column_view const& 
 
   auto const input_sv = cudf::strings_column_view{input};
   auto const offsets_it =
-    cudf::detail::offsetalator_factory::make_input_iterator(input_sv.offsets());
+    cudf::detail::offsetalator_factory::make_input_iterator(input_sv.offsets()) + input_sv.offset();
   auto const d_input_ptr =
     cudf::column_device_view::create(input, stream, cudf::get_current_device_resource_ref());
   auto const is_valid_it = cudf::detail::make_validity_iterator<true>(*d_input_ptr);
@@ -386,7 +387,7 @@ std::unique_ptr<cudf::column> cast_strings_to_integers(cudf::column_view const& 
 
   auto const input_sv = cudf::strings_column_view{input};
   auto const input_offsets_it =
-    cudf::detail::offsetalator_factory::make_input_iterator(input_sv.offsets());
+    cudf::detail::offsetalator_factory::make_input_iterator(input_sv.offsets()) + input_sv.offset();
   auto const d_input_ptr =
     cudf::column_device_view::create(input, stream, cudf::get_current_device_resource_ref());
   auto const valid_input_it = cudf::detail::make_validity_iterator<true>(*d_input_ptr);
@@ -453,7 +454,7 @@ std::pair<std::unique_ptr<cudf::column>, bool> try_remove_quotes_for_floats(
 
   auto const input_sv = cudf::strings_column_view{input};
   auto const input_offsets_it =
-    cudf::detail::offsetalator_factory::make_input_iterator(input_sv.offsets());
+    cudf::detail::offsetalator_factory::make_input_iterator(input_sv.offsets()) + input_sv.offset();
   auto const d_input_ptr =
     cudf::column_device_view::create(input, stream, cudf::get_current_device_resource_ref());
   auto const is_valid_it = cudf::detail::make_validity_iterator<true>(*d_input_ptr);
@@ -713,7 +714,7 @@ std::pair<std::unique_ptr<cudf::column>, bool> try_remove_quotes(
   if (string_count == 0) { return {nullptr, false}; }
 
   auto const input_offsets_it =
-    cudf::detail::offsetalator_factory::make_input_iterator(input.offsets());
+    cudf::detail::offsetalator_factory::make_input_iterator(input.offsets()) + input.offset();
   auto const d_input_ptr = cudf::column_device_view::create(
     input.parent(), stream, cudf::get_current_device_resource_ref());
   auto const is_valid_it = cudf::detail::make_validity_iterator<true>(*d_input_ptr);
@@ -1149,8 +1150,18 @@ std::unique_ptr<cudf::column> convert_from_strings(cudf::strings_column_view con
   CUDF_EXPECTS(schema_with_precision.child_types.size() == 1,
                "The input schema to convert must have exactly one column.");
 
-  auto const input_cv = input.parent();
-  return detail::convert_data_type(input_cv,
+  if (input.offset() != 0) {
+    auto normalized = cudf::strings::detail::copy_slice(input, 0, input.size(), stream, mr);
+    return detail::convert_data_type(std::move(normalized),
+                                     schema_with_precision.child_types.front().second,
+                                     allow_nonnumeric_numbers,
+                                     is_us_locale,
+                                     /*did_nullify_schema_mismatch_rows=*/false,
+                                     stream,
+                                     mr);
+  }
+
+  return detail::convert_data_type(input.parent(),
                                    schema_with_precision.child_types.front().second,
                                    allow_nonnumeric_numbers,
                                    is_us_locale,

@@ -22,6 +22,7 @@
 #include <cudf/detail/utilities/cuda.cuh>
 #include <cudf/detail/utilities/integer_utils.hpp>
 #include <cudf/null_mask.hpp>
+#include <cudf/strings/detail/copying.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
 #include <rmm/device_scalar.hpp>
@@ -399,19 +400,15 @@ validate_and_parse_exponent(char const* chars, int const len, bool strip)
 
   // Spark parses decimal strings through java.math.BigDecimal. Its exponent magnitude and the
   // scale produced by applying that exponent must both fit in a signed Java int, even for zero.
-  auto constexpr max_java_exponent = cuda::std::numeric_limits<int>::max();
-  if (exponent_val > static_cast<T>(max_java_exponent) ||
-      exponent_val < static_cast<T>(-max_java_exponent)) {
+  if (!cuda::std::in_range<int>(exponent_val) ||
+      exponent_val == cuda::std::numeric_limits<int>::min()) {
     return cuda::std::nullopt;
   }
   auto const fractional_digits =
     decimal_location < 0 ? 0 : last_digit - first_digit - decimal_location - 1;
   auto const decimal_scale =
     static_cast<int64_t>(fractional_digits) - static_cast<int64_t>(exponent_val);
-  if (decimal_scale > cuda::std::numeric_limits<int>::max() ||
-      decimal_scale < cuda::std::numeric_limits<int>::min()) {
-    return cuda::std::nullopt;
-  }
+  if (!cuda::std::in_range<int>(decimal_scale)) { return cuda::std::nullopt; }
 
   // decimal location moves to end of digits if no decimal found
   if (decimal_location < 0) { decimal_location = last_digit - first_digit; }
@@ -420,13 +417,19 @@ validate_and_parse_exponent(char const* chars, int const len, bool strip)
     positive, decimal_location, first_digit, exponent_val, has_nonzero_mantissa};
 }
 
+__device__ constexpr bool is_digit(char const chr) { return chr >= '0' && chr <= '9'; }
+
 __device__ bool scan_zero_digits(char const* chars, int len, int& i)
 {
   auto const start = i;
-  while (i < len && chars[i] >= '0' && chars[i] <= '9') {
-    if (chars[i] != '0') { return false; }
-    ++i;
-  }
+  for (; i < len && chars[i] == '0'; ++i) {}
+  return i != start && (i >= len || !is_digit(chars[i]));
+}
+
+__device__ bool scan_digits(char const* chars, int len, int& i)
+{
+  auto const start = i;
+  for (; i < len && is_digit(chars[i]); ++i) {}
   return i != start;
 }
 
@@ -452,11 +455,7 @@ __device__ bool is_valid_unquoted_json_zero(char const* chars, int len)
   if (i < len && (chars[i] == 'e' || chars[i] == 'E')) {
     ++i;
     if (i < len && (chars[i] == '+' || chars[i] == '-')) { ++i; }
-    auto const exponent_start = i;
-    while (i < len && chars[i] >= '0' && chars[i] <= '9') {
-      ++i;
-    }
-    if (i == exponent_start) { return false; }
+    if (!scan_digits(chars, len, i)) { return false; }
   }
 
   return i == len;
@@ -537,10 +536,10 @@ CUDF_KERNEL void string_to_decimal_kernel(T* out,
     auto const exponent_val         = validated->exponent_val;
     auto const has_nonzero_mantissa = validated->has_nonzero_mantissa;
 
-    auto const is_json_zero =
-      !json_quote_counts.empty() && !has_nonzero_mantissa &&
-      (json_quote_counts[row] > 0 || is_valid_unquoted_json_zero(&chars[row_start], len));
-    if (is_json_zero) {
+    auto const is_zero =
+      !has_nonzero_mantissa && (json_quote_counts.empty() || json_quote_counts[row] > 0 ||
+                                is_valid_unquoted_json_zero(&chars[row_start], len));
+    if (is_zero) {
       // A zero value is independent of exponent. Avoiding the addition also prevents signed
       // overflow when the parsed exponent and the mantissa location are individually valid.
       decimal_location = 0;
@@ -549,8 +548,7 @@ CUDF_KERNEL void string_to_decimal_kernel(T* out,
       // every decimal width. Check the int destination before narrowing it.
       auto const adjusted_location =
         static_cast<int64_t>(decimal_location) + static_cast<int64_t>(exponent_val);
-      if (adjusted_location > cuda::std::numeric_limits<int>::max() ||
-          adjusted_location < cuda::std::numeric_limits<int>::min()) {
+      if (!cuda::std::in_range<int>(adjusted_location)) {
         valid = false;
       } else {
         decimal_location = static_cast<int>(adjusted_location);
@@ -618,8 +616,7 @@ CUDF_KERNEL void string_to_decimal_kernel(T* out,
               // count_digits will detect the change.
               if (orig_val != 0 && after_digits > before_digits) {
                 if (decimal_location == cuda::std::numeric_limits<int>::max()) {
-                  valid            = false;
-                  decimal_location = 0;
+                  valid = false;
                   break;
                 }
                 // more digits now than before rounding
@@ -650,10 +647,9 @@ CUDF_KERNEL void string_to_decimal_kernel(T* out,
 
       auto const significant_preceding_zeros =
         decimal_location < 0 ? -static_cast<int64_t>(decimal_location) : int64_t{0};
-      auto const zeros_to_decimal =
-        cuda::std::max(int64_t{0},
-                       scale > 0 ? static_cast<int64_t>(decimal_location) - total_digits - scale
-                                 : static_cast<int64_t>(decimal_location) - total_digits);
+      auto const zeros_to_decimal = cuda::std::max(
+        int64_t{0},
+        static_cast<int64_t>(decimal_location) - total_digits - (scale > 0 ? scale : 0));
       auto const significant_digits_before_decimal =
         significant_digits_before_decimal_in_string + zeros_to_decimal + rounding_digits;
 
@@ -930,6 +926,13 @@ std::unique_ptr<column> string_to_integer(data_type dtype,
                                           cuda::stream_ref stream,
                                           rmm::device_async_resource_ref mr)
 {
+  if (string_col.offset() != 0) {
+    auto const normalized =
+      cudf::strings::detail::copy_slice(string_col, 0, string_col.size(), stream, mr);
+    return string_to_integer(
+      dtype, strings_column_view{normalized->view()}, ansi_mode, strip, stream, mr);
+  }
+
   return type_dispatcher(
     dtype, detail::string_to_integer_impl{}, string_col, ansi_mode, strip, stream, mr);
 }
@@ -987,6 +990,19 @@ std::unique_ptr<column> string_to_decimal(int32_t precision,
   if (string_col.size() == 0) {
     return std::make_unique<column>(
       dtype, 0, rmm::device_buffer{}, cudf::create_null_mask(0, cudf::mask_state::UNALLOCATED), 0);
+  }
+
+  if (string_col.offset() != 0) {
+    auto const normalized = cudf::strings::detail::copy_slice(
+      string_col, 0, string_col.size(), stream, mr.get_output_mr());
+    return string_to_decimal(precision,
+                             scale,
+                             strings_column_view{normalized->view()},
+                             ansi_mode,
+                             strip,
+                             json_quote_counts,
+                             stream,
+                             mr);
   }
 
   return type_dispatcher(dtype,

@@ -73,6 +73,19 @@ TYPED_TEST(StringToIntegerTests, Simple)
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected);
 }
 
+TYPED_TEST(StringToIntegerTests, SlicedInput)
+{
+  auto const strings  = test::strings_column_wrapper{"outside-before", "1", "2", "outside-after"};
+  auto const sliced   = cudf::slice(strings, {1, 3})[0];
+  auto const result   = spark_rapids_jni::string_to_integer(data_type{type_to_id<TypeParam>()},
+                                                          strings_column_view{sliced},
+                                                          false,
+                                                          true,
+                                                          cudf::get_default_stream());
+  auto const expected = test::fixed_width_column_wrapper<TypeParam>({1, 2}, {1, 1});
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected);
+}
+
 TYPED_TEST(StringToIntegerTests, Ansi)
 {
   auto const strings = test::strings_column_wrapper(
@@ -639,17 +652,38 @@ TEST_F(StringToDecimalTests, ExtremeExponentCarryDoesNotOverflowPosition)
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected);
 }
 
-TEST_F(StringToDecimalTests, ExtremeExponentRejectsOverflowedPosition)
+TEST_F(StringToDecimalTests, ZeroAtExtremeExponentMatchesSpark)
 {
-  auto const stream = cudf::get_default_stream();
-  // Ordinary CAST must reject the adjusted position 1 + INT_MAX, even for zero.
-  // If it wraps negative, zero otherwise survives conversion, so a null result
-  // detects the missing guard.
+  auto const stream  = cudf::get_default_stream();
   auto const strings = test::strings_column_wrapper{"0e2147483647", "0e2147483646"};
   auto const result =
     spark_rapids_jni::string_to_decimal(1, 0, strings_column_view{strings}, false, false, stream);
   auto const expected =
-    test::fixed_point_column_wrapper<int32_t>({0, 0}, {0, 0}, numeric::scale_type{0});
+    test::fixed_point_column_wrapper<int32_t>({0, 0}, {1, 1}, numeric::scale_type{0});
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected);
+}
+
+TEST_F(StringToDecimalTests, DigitlessMantissaIsInvalid)
+{
+  auto const stream  = cudf::get_default_stream();
+  auto const strings = test::strings_column_wrapper{".", "e", "E2"};
+  auto const result =
+    spark_rapids_jni::string_to_decimal(1, 0, strings_column_view{strings}, false, false, stream);
+  auto const expected =
+    test::fixed_point_column_wrapper<int32_t>({0, 0, 0}, {0, 0, 0}, numeric::scale_type{0});
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected);
+}
+
+TEST_F(StringToDecimalTests, SlicedInput)
+{
+  auto const stream = cudf::get_default_stream();
+  auto const strings =
+    test::strings_column_wrapper{"outside-before", "0e2147483647", "7", "outside-after"};
+  auto const sliced = cudf::slice(strings, {1, 3})[0];
+  auto const result =
+    spark_rapids_jni::string_to_decimal(1, 0, strings_column_view{sliced}, false, false, stream);
+  auto const expected =
+    test::fixed_point_column_wrapper<int32_t>({0, 7}, {1, 1}, numeric::scale_type{0});
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected);
 }
 
@@ -732,6 +766,20 @@ TYPED_TEST(StringToFloatTests, Simple)
     data_type{type_to_id<TypeParam>()}, strings_column_view{in}, false, cudf::get_default_stream());
 
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected->view());
+}
+
+TYPED_TEST(StringToFloatTests, SlicedInput)
+{
+  auto const strings =
+    test::strings_column_wrapper{"outside-before", "1.5", "-2.25", "outside-after"};
+  auto const sliced   = cudf::slice(strings, {1, 3})[0];
+  auto const result   = spark_rapids_jni::string_to_float(data_type{type_to_id<TypeParam>()},
+                                                        strings_column_view{sliced},
+                                                        false,
+                                                        cudf::get_default_stream());
+  auto const expected = test::fixed_width_column_wrapper<TypeParam>(
+    {static_cast<TypeParam>(1.5), static_cast<TypeParam>(-2.25)}, {1, 1});
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected);
 }
 
 TYPED_TEST(StringToFloatTests, DecimalPointAfterTruncatedDigitsAcrossBatches)

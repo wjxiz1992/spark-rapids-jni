@@ -116,7 +116,7 @@ std::unique_ptr<cudf::column> string_to_decimal(
  *                           @p string_col.
  * @param[in] precision Precision of the output decimal type.
  * @param[in] scale Scale of the output decimal type, using the cuDF scale convention.
- * @param[in] string_col Incoming string column to convert to decimals.
+ * @param[in] string_col Incoming string column to convert to decimals. Sliced views are supported.
  * @param[in] ansi_mode If true, strict conversion and throws on error. If false, null invalid
  *                      entries.
  * @param[in] strip If true, leading and trailing white space is ignored.
@@ -127,8 +127,10 @@ std::unique_ptr<cudf::column> string_to_decimal(
  *                              and the resulting java.math.BigDecimal scale fits a signed Java int,
  *                              including when applying the exponent would overflow the int decimal
  *                              location. Integer.MIN_VALUE is not accepted as an exponent because
- *                              its negation is not representable as a signed Java int.
- * @param[in] stream Stream on which to operate.
+ *                              its negation is not representable as a signed Java int. The span
+ * must reference device-accessible storage that remains alive and unchanged until work enqueued on
+ * @p stream completes; writes that populate it must be ordered before this call on the same stream.
+ * @param[in] stream Stream on which to operate and on which @p json_quote_counts is ordered.
  * @param[in] mr Memory resource for returned column.
  * @return std::unique_ptr<column> Decimal column that was created from string_col.
  */
