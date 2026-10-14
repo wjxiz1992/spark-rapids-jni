@@ -1151,7 +1151,8 @@ std::unique_ptr<cudf::column> convert_from_strings(cudf::strings_column_view con
                "The input schema to convert must have exactly one column.");
 
   if (input.offset() != 0) {
-    auto normalized = cudf::strings::detail::copy_slice(input, 0, input.size(), stream, mr);
+    auto normalized = cudf::strings::detail::copy_slice(
+      input, 0, input.size(), stream, cudf::get_current_device_resource_ref());
     return detail::convert_data_type(std::move(normalized),
                                      schema_with_precision.child_types.front().second,
                                      allow_nonnumeric_numbers,

@@ -777,6 +777,8 @@ struct string_to_integer_impl {
                                      cuda::stream_ref stream,
                                      rmm::device_async_resource_ref mr)
   {
+    CUDF_EXPECTS(string_col.offset() == 0, "string_to_integer_impl requires a zero-offset input.");
+
     if (string_col.size() == 0) {
       return std::make_unique<column>(data_type{type_to_id<T>()},
                                       0,
@@ -856,6 +858,8 @@ struct string_to_decimal_impl {
                                      cuda::stream_ref stream,
                                      rmm::device_async_resource_ref mr)
   {
+    CUDF_EXPECTS(string_col.offset() == 0, "string_to_decimal_impl requires a zero-offset input.");
+
     using Type = device_storage_type_t<T>;
 
     rmm::device_uvector<Type> data(string_col.size(), stream, mr);
@@ -927,8 +931,8 @@ std::unique_ptr<column> string_to_integer(data_type dtype,
                                           rmm::device_async_resource_ref mr)
 {
   if (string_col.offset() != 0) {
-    auto const normalized =
-      cudf::strings::detail::copy_slice(string_col, 0, string_col.size(), stream, mr);
+    auto const normalized = cudf::strings::detail::copy_slice(
+      string_col, 0, string_col.size(), stream, cudf::get_current_device_resource_ref());
     return string_to_integer(
       dtype, strings_column_view{normalized->view()}, ansi_mode, strip, stream, mr);
   }
@@ -994,7 +998,7 @@ std::unique_ptr<column> string_to_decimal(int32_t precision,
 
   if (string_col.offset() != 0) {
     auto const normalized = cudf::strings::detail::copy_slice(
-      string_col, 0, string_col.size(), stream, mr.get_output_mr());
+      string_col, 0, string_col.size(), stream, mr.get_temporary_mr());
     return string_to_decimal(precision,
                              scale,
                              strings_column_view{normalized->view()},
