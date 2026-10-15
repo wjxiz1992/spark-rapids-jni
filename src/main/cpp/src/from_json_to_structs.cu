@@ -1152,13 +1152,9 @@ std::unique_ptr<cudf::column> convert_from_strings(cudf::strings_column_view con
   auto const& output_schema = schema_with_precision.child_types.front().second;
 
   if (input.offset() != 0) {
-    auto const normalization_mr =
-      output_schema.type.id() == cudf::type_id::STRING || cudf::is_chrono(output_schema.type)
-        ? mr
-        : cudf::get_current_device_resource_ref();
-    auto normalized =
-      cudf::strings::detail::copy_slice(input, 0, input.size(), stream, normalization_mr);
-    return detail::convert_data_type(std::move(normalized),
+    auto normalized = cudf::strings::detail::copy_slice(
+      input, 0, input.size(), stream, cudf::get_current_device_resource_ref());
+    return detail::convert_data_type(normalized->view(),
                                      output_schema,
                                      allow_nonnumeric_numbers,
                                      is_us_locale,
