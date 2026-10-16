@@ -95,7 +95,7 @@ field_descriptor_bundle make_field_descriptors(std::vector<int> const& field_ind
 
 namespace {
 
-inline std::pair<cuda::device_buffer<std::byte>, cudf::size_type>
+inline std::pair<cuda::device_buffer<cudf::bitmask_type>, cudf::size_type>
 make_null_mask_from_parent_locations(field_location const* parent_locs,
                                      int num_rows,
                                      cuda::stream_ref stream,

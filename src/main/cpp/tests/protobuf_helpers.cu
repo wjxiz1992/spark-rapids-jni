@@ -146,12 +146,15 @@ TEST_F(ProtobufHelpersTest, NullMaskFromPaddedValidIgnoresTail)
   auto [mask, null_count] = spark_rapids_jni::protobuf::detail::make_null_mask_from_valid(
     valid, 2, stream, cudf::get_current_device_resource_ref());
 
-  EXPECT_EQ(cudf::bitmask_allocation_size_bytes(2), mask.size());
+  EXPECT_EQ(cudf::bitmask_allocation_size_words(2), mask.size());
   EXPECT_EQ(1, null_count);
 
-  std::vector<cudf::bitmask_type> h_mask(mask.size() / sizeof(cudf::bitmask_type));
-  CUDF_CUDA_TRY(
-    cudaMemcpyAsync(h_mask.data(), mask.data(), mask.size(), cudaMemcpyDefault, stream.get()));
+  std::vector<cudf::bitmask_type> h_mask(mask.size());
+  CUDF_CUDA_TRY(cudaMemcpyAsync(h_mask.data(),
+                                mask.data(),
+                                mask.size() * sizeof(cudf::bitmask_type),
+                                cudaMemcpyDefault,
+                                stream.get()));
   stream.sync();
 
   EXPECT_TRUE(cudf::bit_is_set(h_mask.data(), 0));

@@ -498,11 +498,11 @@ void launch_compute_msg_locations_from_occurrences(protobuf_input_view input,
 
 // Build a row-aligned null mask from `valid[row]` boolean flags.
 template <typename T>
-inline std::pair<cuda::device_buffer<std::byte>, cudf::size_type> make_null_mask_from_valid(
-  rmm::device_uvector<T> const& valid,
-  cudf::size_type num_rows,
-  cuda::stream_ref stream,
-  rmm::device_async_resource_ref mr)
+inline std::pair<cuda::device_buffer<cudf::bitmask_type>, cudf::size_type>
+make_null_mask_from_valid(rmm::device_uvector<T> const& valid,
+                          cudf::size_type num_rows,
+                          cuda::stream_ref stream,
+                          rmm::device_async_resource_ref mr)
 {
   CUDF_EXPECTS(num_rows >= 0, "num_rows must be non-negative");
   CUDF_EXPECTS(valid.size() >= static_cast<size_t>(num_rows),
