@@ -23,7 +23,6 @@
 #include <cudf/scalar/scalar_factories.hpp>
 #include <cudf/strings/convert/convert_floats.hpp>
 #include <cudf/strings/detail/convert/string_to_float.cuh>
-#include <cudf/strings/detail/copying.hpp>
 #include <cudf/utilities/bit.hpp>
 
 #include <rmm/resource_ref.hpp>
@@ -896,8 +895,8 @@ std::unique_ptr<column> string_to_float(data_type dtype,
   if (string_col.size() == 0) { return cudf::make_empty_column(dtype); }
 
   if (string_col.offset() != 0) {
-    auto const normalized = cudf::strings::detail::copy_slice(
-      string_col, 0, string_col.size(), stream, cudf::get_current_device_resource_ref());
+    auto const normalized = std::make_unique<cudf::column>(
+      string_col.parent(), stream, cudf::get_current_device_resource_ref());
     return string_to_float(dtype, strings_column_view{normalized->view()}, ansi_mode, stream, mr);
   }
 

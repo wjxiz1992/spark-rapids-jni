@@ -22,7 +22,6 @@
 #include <cudf/detail/utilities/cuda.cuh>
 #include <cudf/detail/utilities/integer_utils.hpp>
 #include <cudf/null_mask.hpp>
-#include <cudf/strings/detail/copying.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
 #include <rmm/device_scalar.hpp>
@@ -931,8 +930,8 @@ std::unique_ptr<column> string_to_integer(data_type dtype,
                                           rmm::device_async_resource_ref mr)
 {
   if (string_col.offset() != 0) {
-    auto const normalized = cudf::strings::detail::copy_slice(
-      string_col, 0, string_col.size(), stream, cudf::get_current_device_resource_ref());
+    auto const normalized = std::make_unique<cudf::column>(
+      string_col.parent(), stream, cudf::get_current_device_resource_ref());
     return string_to_integer(
       dtype, strings_column_view{normalized->view()}, ansi_mode, strip, stream, mr);
   }
@@ -997,8 +996,8 @@ std::unique_ptr<column> string_to_decimal(int32_t precision,
   }
 
   if (string_col.offset() != 0) {
-    auto const normalized = cudf::strings::detail::copy_slice(
-      string_col, 0, string_col.size(), stream, mr.get_temporary_mr());
+    auto const normalized =
+      std::make_unique<cudf::column>(string_col.parent(), stream, mr.get_temporary_mr());
     return string_to_decimal(precision,
                              scale,
                              strings_column_view{normalized->view()},
