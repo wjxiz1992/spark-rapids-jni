@@ -18,6 +18,7 @@
 #include "json_utils.hpp"
 #include "nvtx_ranges.hpp"
 #include "utilities/iterator.cuh"
+#include "utilities/utf8.hpp"
 
 #include <cudf/column/column_device_view.cuh>
 #include <cudf/column/column_factories.hpp>
@@ -30,7 +31,6 @@
 #include <cudf/lists/lists_column_view.hpp>
 #include <cudf/null_mask.hpp>
 #include <cudf/strings/detail/strings_children.cuh>
-#include <cudf/strings/detail/utf8.hpp>
 #include <cudf/strings/strings_column_view.hpp>
 #include <cudf/utilities/bit.hpp>
 #include <cudf/utilities/memory_resource.hpp>
@@ -377,7 +377,7 @@ using string_index_pair = cuda::std::pair<char const*, cudf::size_type>;
  */
 __device__ char unicode_decimal_digit_to_ascii(cudf::char_utf8 character)
 {
-  auto const code_point = cudf::strings::detail::utf8_to_codepoint(character);
+  auto const code_point = spark_rapids_jni::util::utf8_to_codepoint(character);
   if (code_point > 0x00'FFFF) { return '\0'; }
   auto const packed_values = packed_decimal_digit_values_device[code_point / 2];
   auto const digit =
@@ -655,9 +655,9 @@ std::unique_ptr<cudf::column> cast_strings_to_decimals(cudf::column_view const& 
         auto const is_quote                  = byte == '"';
         auto const should_remove             = is_quote || byte == ',';
         cudf::size_type digit_byte_reduction = 0;
-        if (!cudf::strings::detail::is_utf8_continuation_char(static_cast<unsigned char>(byte))) {
+        if (!spark_rapids_jni::util::is_utf8_continuation_char(static_cast<unsigned char>(byte))) {
           cudf::char_utf8 character;
-          auto const character_width = cudf::strings::detail::to_char_utf8(chars + idx, character);
+          auto const character_width = spark_rapids_jni::util::to_char_utf8(chars + idx, character);
           if (character_width > 1 && unicode_decimal_digit_to_ascii(character) != '\0') {
             digit_byte_reduction = character_width - 1;
           }
@@ -762,7 +762,7 @@ std::unique_ptr<cudf::column> cast_strings_to_decimals(cudf::column_view const& 
                        while (in_ptr != in_end) {
                          cudf::char_utf8 character;
                          auto const character_width =
-                           cudf::strings::detail::to_char_utf8(in_ptr, character);
+                           spark_rapids_jni::util::to_char_utf8(in_ptr, character);
                          auto const ascii_digit =
                            character_width > 1 ? unicode_decimal_digit_to_ascii(character) : '\0';
                          if (ascii_digit != '\0') {
