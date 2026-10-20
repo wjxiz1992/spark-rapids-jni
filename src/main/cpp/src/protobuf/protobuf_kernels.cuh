@@ -21,7 +21,6 @@
 
 #include <cudf/column/column_device_view.cuh>
 #include <cudf/column/column_factories.hpp>
-#include <cudf/detail/iterator.cuh>
 #include <cudf/detail/utilities/vector_factories.hpp>
 #include <cudf/detail/valid_if.cuh>
 #include <cudf/null_mask.hpp>
@@ -35,6 +34,7 @@
 
 #include <cub/device/device_memcpy.cuh>
 #include <cuda/functional>
+#include <cuda/iterator>
 #include <cuda/std/bit>
 #include <cuda/std/limits>
 #include <cuda/std/type_traits>
@@ -634,21 +634,21 @@ inline std::unique_ptr<cudf::column> extract_and_build_string_or_bytes_column(
         message_data, loc_provider, num_rows, offsets_data, chars_ptr, default_ptr, def_len);
       CUDF_CHECK_CUDA(stream.get());
     } else {
-      auto src_iter = cudf::detail::make_counting_transform_iterator(
-        0,
+      auto src_iter = cuda::transform_iterator(
+        cuda::counting_iterator{0},
         cuda::proclaim_return_type<void const*>(
           [message_data, loc_provider, default_ptr] __device__(int idx) -> void const* {
             auto loc = loc_provider.input_location(idx);
             if (!loc.is_present()) { return static_cast<void const*>(default_ptr); }
             return static_cast<void const*>(message_data + loc.offset);
           }));
-      auto dst_iter = cudf::detail::make_counting_transform_iterator(
-        0,
+      auto dst_iter = cuda::transform_iterator(
+        cuda::counting_iterator{0},
         cuda::proclaim_return_type<void*>([chars_ptr, offsets_data] __device__(int idx) -> void* {
           return static_cast<void*>(chars_ptr + offsets_data[idx]);
         }));
-      auto size_iter = cudf::detail::make_counting_transform_iterator(
-        0,
+      auto size_iter = cuda::transform_iterator(
+        cuda::counting_iterator{0},
         cuda::proclaim_return_type<size_t>([loc_provider, def_len] __device__(int idx) -> size_t {
           auto loc = loc_provider.input_location(idx);
           if (!loc.is_present()) { return def_len; }
