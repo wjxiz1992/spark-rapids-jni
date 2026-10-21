@@ -65,7 +65,8 @@ TEST_F(FromJsonTest, ConvertFromStringsPreservesSlicedIntegerNulls)
                                              {0},
                                              {0},
                                              true,
-                                             true);
+                                             true,
+                                             {});
     auto const expected =
       cudf::test::fixed_width_column_wrapper<int32_t>({1, 0, 0, 0, -2}, {1, 0, 0, 0, 1});
     CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected);
@@ -74,6 +75,15 @@ TEST_F(FromJsonTest, ConvertFromStringsPreservesSlicedIntegerNulls)
 
 TEST_F(FromJsonTest, ConvertFromStringsPreservesSlicedDecimalNulls)
 {
+  // These native cases exercise ASCII decimals. Java regressions supply the active JVM's full
+  // Unicode digit table for Unicode input coverage.
+  static auto const ascii_digit_values = [] {
+    auto values = std::vector<int8_t>(1 << 16, -1);
+    for (int digit = 0; digit < 10; ++digit) {
+      values['0' + digit] = static_cast<int8_t>(digit);
+    }
+    return values;
+  }();
   for (bool const quoted : {false, true}) {
     SCOPED_TRACE(quoted);
     auto const strings =
@@ -96,7 +106,8 @@ TEST_F(FromJsonTest, ConvertFromStringsPreservesSlicedDecimalNulls)
                                              {0},
                                              {10},
                                              true,
-                                             true);
+                                             true,
+                                             ascii_digit_values);
     auto const expected = cudf::test::fixed_point_column_wrapper<int64_t>(
       {0, 0, 0, 2}, {1, 0, 0, 1}, numeric::scale_type{0});
     CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected);
@@ -116,7 +127,8 @@ TEST_F(FromJsonTest, ConvertFromStringsSupportsSlicedPrimitiveTypes)
                                              {0},
                                              {0},
                                              true,
-                                             true);
+                                             true,
+                                             {});
     auto const expected = cudf::test::fixed_width_column_wrapper<bool>{true, false};
     CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected);
   }
@@ -132,7 +144,8 @@ TEST_F(FromJsonTest, ConvertFromStringsSupportsSlicedPrimitiveTypes)
                                              {0},
                                              {0},
                                              true,
-                                             true);
+                                             true,
+                                             {});
     auto const expected = cudf::test::fixed_width_column_wrapper<int32_t>({1, -2}, {1, 1});
     CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected);
   }
@@ -148,7 +161,8 @@ TEST_F(FromJsonTest, ConvertFromStringsSupportsSlicedPrimitiveTypes)
                                              {0},
                                              {0},
                                              true,
-                                             true);
+                                             true,
+                                             {});
     auto const expected = cudf::test::fixed_width_column_wrapper<double>({1.5, -2.25}, {1, 1});
     CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected);
   }
@@ -164,7 +178,8 @@ TEST_F(FromJsonTest, ConvertFromStringsSupportsSlicedPrimitiveTypes)
                                              {0},
                                              {0},
                                              true,
-                                             true);
+                                             true,
+                                             {});
     auto const expected = cudf::test::strings_column_wrapper{"alpha", "beta"};
     CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected);
   }
