@@ -1151,6 +1151,9 @@ std::unique_ptr<cudf::column> convert_from_strings(cudf::strings_column_view con
   auto const& output_schema = schema_with_precision.child_types.front().second;
 
   if (input.offset() != 0) {
+    // convert_data_type does not uniformly support slices: integer conversion can attach a
+    // zero-offset replacement validity mask to the input view. Normalize before that step so
+    // the strings and mask use the same row indices. Offset propagation is tracked in #5303.
     auto normalized = std::make_unique<cudf::column>(
       input.parent(), stream, cudf::get_current_device_resource_ref());
     return detail::convert_data_type(normalized->view(),

@@ -44,6 +44,34 @@
 
 struct FromJsonTest : public cudf::test::BaseFixture {};
 
+TEST_F(FromJsonTest, ConvertFromStringsPreservesSlicedIntegerNulls)
+{
+  for (cudf::size_type const offset : {1, 33}) {
+    SCOPED_TRACE(offset);
+    auto values = std::vector<std::string>(offset, "outside-before");
+    values.insert(values.end(), {"1", "3.5", "4e2", "7", "-2", "outside-after"});
+    auto const strings = cudf::test::strings_column_wrapper(values.begin(), values.end()).release();
+    auto valids        = std::vector<bool>(values.size(), true);
+    valids[offset + 3] = false;
+    auto [null_mask, null_count] = cudf::bools_to_mask(
+      cudf::test::fixed_width_column_wrapper<bool>(valids.begin(), valids.end()));
+    strings->set_null_mask(std::move(*null_mask), null_count);
+
+    auto const sliced = cudf::slice(strings->view(), {offset, offset + 5})[0];
+    auto const result =
+      spark_rapids_jni::convert_from_strings(cudf::strings_column_view{sliced},
+                                             {0},
+                                             {static_cast<int>(cudf::type_id::INT32)},
+                                             {0},
+                                             {0},
+                                             true,
+                                             true);
+    auto const expected =
+      cudf::test::fixed_width_column_wrapper<int32_t>({1, 0, 0, 0, -2}, {1, 0, 0, 0, 1});
+    CUDF_TEST_EXPECT_COLUMNS_EQUAL(result->view(), expected);
+  }
+}
+
 TEST_F(FromJsonTest, ConvertFromStringsPreservesSlicedDecimalNulls)
 {
   for (bool const quoted : {false, true}) {
